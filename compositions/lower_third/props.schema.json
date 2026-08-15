@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lower_third props",
+  "type": "object",
+  "properties": {
+    "line1": { "type": "string", "description": "Primary line, e.g. a name" },
+    "line2": { "type": "string", "description": "Secondary line, e.g. a title" },
+    "x": { "type": "number", "default": 0, "description": "Overlay x offset in composite" },
+    "y": { "type": "number", "default": 0, "description": "Overlay y offset in composite" }
+  },
+  "required": ["line1"],
+  "additionalProperties": false
+}

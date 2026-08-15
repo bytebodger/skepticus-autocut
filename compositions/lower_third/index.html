@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Transparent background — the card composites over footage, never replaces it. */
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; font-family: "Montserrat", system-ui, sans-serif; }
+
+  .card {
+    position: absolute; left: 120px; bottom: 140px;
+    /* data-start / data-duration drive the render window; the animation below
+       covers a 4s card: 0.4s in, hold, 0.4s out. */
+    animation: slide 4s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .bar { height: 8px; width: 640px; background: #ffcf33; }
+  .l1  { font-size: 72px; font-weight: 800; color: #fff; text-shadow: 0 4px 24px rgba(0,0,0,.6); margin-top: 12px; }
+  .l2  { font-size: 40px; font-weight: 500; color: #ffcf33; letter-spacing: 2px; }
+
+  @keyframes slide {
+    0%   { opacity: 0; transform: translateX(-40px); }
+    10%  { opacity: 1; transform: translateX(0); }
+    90%  { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(-40px); }
+  }
+</style>
+</head>
+<body>
+  <!-- data-start is filled by the compositor at source_time; data-duration in seconds. -->
+  <div class="card" data-start="0" data-duration="4">
+    <div class="bar"></div>
+    <div class="l1" id="line1">Skepticus</div>
+    <div class="l2" id="line2">Episode</div>
+  </div>
+  <script>
+    // Props come from the EDL via HyperFrames. Fall back to defaults for preview.
+    var P = (window.PROPS || {});
+    if (P.line1) document.getElementById("line1").textContent = P.line1;
+    if (P.line2) document.getElementById("line2").textContent = P.line2;
+  </script>
+</body>
+</html>

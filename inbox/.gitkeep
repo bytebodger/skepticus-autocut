@@ -1,0 +1,2 @@
+# Drop raw MP4s here, named <episode_id>.mp4 (e.g. ep042.mp4).
+# Contents are gitignored; this file keeps the folder in the repo.

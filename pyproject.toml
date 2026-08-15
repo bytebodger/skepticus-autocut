@@ -1,0 +1,32 @@
+[project]
+name = "skepticus-autocut"
+version = "0.1.0"
+description = "Automated video editing pipeline: raw MP4 in, cut/graded/captioned video out."
+requires-python = ">=3.12,<3.13"
+
+# Determinism: pin everything that touches transcription output. See spec section 15.
+dependencies = [
+    "faster-whisper==1.1.1",
+    "ctranslate2==4.5.0",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "jinja2==3.1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+]
+
+[project.scripts]
+autocut = "autocut.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["autocut"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

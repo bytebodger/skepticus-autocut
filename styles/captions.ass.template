@@ -1,0 +1,17 @@
+[Script Info]
+; Skepticus caption style. captions.py appends Dialogue lines after this header.
+; Set font, outline, shadow, and margins here once and leave them.
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+; PrimaryColour = highlighted (karaoke) fill; SecondaryColour = not-yet-spoken.
+; Colours are &HAABBGGRR (alpha,blue,green,red). 00 alpha = opaque.
+Style: Skepticus,Montserrat,64,&H0000FFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,2,2,120,120,90,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

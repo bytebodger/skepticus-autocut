@@ -1,0 +1,18 @@
+# Intermediates and outputs — all regenerable from inbox/ + code.
+work/
+out/
+
+# Raw drops are large; keep the folder, ignore its contents.
+inbox/*
+!inbox/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# HyperFrames / node
+node_modules/
