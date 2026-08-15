@@ -55,13 +55,20 @@ def run(ep: Episode, *, force: bool = False) -> None:
         log.info("grade: cache hit, skipping")
         return
 
-    lut_posix = lut_file.as_posix()
+    # Reference the LUT by a relative, forward-slashed path and run from the repo
+    # root: an absolute Windows path's drive colon collides with the ffmpeg
+    # filter-option separator (lut3d=C:/... is misparsed). Same hazard as the
+    # subtitles path in stage 8.
+    lut_arg = lut_file.resolve().relative_to(ep.root.resolve()).as_posix()
     log.info("grade: applying %s -> %s", lut_rel, ep.graded)
-    ffmpeg.run_ffmpeg([
-        "-i", ep.cut,
-        "-vf", f"lut3d={lut_posix}",
-        "-c:v", "libx264", "-preset", "slow", "-crf", CRF,
-        "-c:a", "copy",
-        ep.graded,
-    ])
+    ffmpeg.run_ffmpeg(
+        [
+            "-i", ep.cut,
+            "-vf", f"lut3d={lut_arg}",
+            "-c:v", "libx264", "-preset", "slow", "-crf", CRF,
+            "-c:a", "copy",
+            ep.graded,
+        ],
+        cwd=str(ep.root),
+    )
     cache.mark_done(stage_dir, input_hash, extra={"stage": "grade"})

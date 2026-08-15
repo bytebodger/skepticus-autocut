@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 from . import cache, ffmpeg
@@ -23,10 +24,13 @@ from .paths import Episode
 
 log = logging.getLogger("autocut.transcribe")
 
-MODEL = "large-v3"
-COMPUTE_TYPE = "float16"
-DEVICE = "cuda"
-BEAM_SIZE = 5
+# Spec defaults (section 2/15). Overridable by env for machines without a CUDA
+# runtime (e.g. CPU int8) or for faster test runs with a smaller model — the
+# chosen values are recorded into words.json so the transcript is self-describing.
+MODEL = os.environ.get("AUTOCUT_WHISPER_MODEL", "large-v3")
+COMPUTE_TYPE = os.environ.get("AUTOCUT_WHISPER_COMPUTE", "float16")
+DEVICE = os.environ.get("AUTOCUT_WHISPER_DEVICE", "cuda")
+BEAM_SIZE = int(os.environ.get("AUTOCUT_WHISPER_BEAM", "5"))
 # Pin the exact model snapshot for byte-reproducible transcripts. Fill in the
 # HF revision hash for your downloaded model; None means "latest", which is not
 # deterministic across re-downloads.
@@ -39,8 +43,33 @@ _SILENCE_START = re.compile(r"silence_start:\s*([0-9.]+)")
 _SILENCE_END = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)")
 
 
+def _add_cuda_dll_dirs() -> None:
+    """Make the pip-installed CUDA runtime DLLs loadable.
+
+    On Windows, Python 3.8+ resolves an extension module's dependency DLLs
+    through a secure search that ignores PATH, so ctranslate2's .pyd can't find
+    cublas64_12.dll / cudnn64_9.dll even when their dirs are on PATH. Registering
+    the nvidia-*-cu12 packages' bin dirs with os.add_dll_directory fixes it. Must
+    run before faster_whisper (hence ctranslate2) is imported.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import nvidia
+    except ImportError:
+        return
+    from pathlib import Path
+    # nvidia is a PEP 420 namespace package (no __file__); use __path__.
+    for root in nvidia.__path__:
+        for pkg in Path(root).iterdir():
+            bin_dir = pkg / "bin"
+            if bin_dir.is_dir():
+                os.add_dll_directory(str(bin_dir))
+
+
 def _transcribe_words(ep: Episode) -> dict:
     # Imported lazily so the rest of the CLI works without CUDA/torch present.
+    _add_cuda_dll_dirs()
     from faster_whisper import WhisperModel
 
     model = WhisperModel(

@@ -91,7 +91,8 @@ def _build_mezzanine(ep: Episode) -> None:
     ep.mezz_dir.mkdir(parents=True, exist_ok=True)
     ffmpeg.run_ffmpeg([
         "-i", ep.raw,
-        "-vsync", "cfr", "-r", TARGET_FPS,
+        # -fps_mode cfr is the modern replacement for the removed -vsync cfr.
+        "-fps_mode", "cfr", "-r", TARGET_FPS,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", MEZZ_CRF,
         "-g", "1", "-pix_fmt", "yuv420p",
         "-c:a", "pcm_s16le", "-ar", AUDIO_RATE,

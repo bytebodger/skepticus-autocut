@@ -21,9 +21,15 @@ The pipeline shells out to `ffmpeg`/`ffprobe` and uses `faster-whisper` on CUDA.
    pip install -e .[dev]
    ```
 2. **FFmpeg.** Install a pinned build and put it on `PATH` (or set
-   `AUTOCUT_FFMPEG` / `AUTOCUT_FFPROBE` to absolute paths).
+   `AUTOCUT_FFMPEG` / `AUTOCUT_FFPROBE` to absolute paths). Tested against
+   FFmpeg 9.0 (uses `-fps_mode cfr` and `-/filter_complex`, the modern
+   replacements for the removed `-vsync` and `-filter_complex_script`).
 3. **HyperFrames.** `npx hyperframes` is used for overlay cards (stage 6).
-4. **GPU.** faster-whisper `large-v3` at float16 uses ~4.7GB VRAM.
+4. **GPU.** faster-whisper `large-v3` at float16 uses ~4.7GB VRAM. On Windows,
+   install the CUDA runtime DLLs with `pip install -e .[cuda]` — transcribe.py
+   registers them automatically at import. Without a CUDA runtime, transcribe on
+   CPU by setting `AUTOCUT_WHISPER_DEVICE=cpu` and `AUTOCUT_WHISPER_COMPUTE=int8`
+   (optionally a smaller `AUTOCUT_WHISPER_MODEL`).
 
 ## Usage
 

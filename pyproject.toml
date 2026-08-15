@@ -17,6 +17,14 @@ dependencies = [
 dev = [
     "pytest==8.3.4",
 ]
+# CUDA runtime DLLs for GPU transcription on Windows. ctranslate2 needs
+# cublas64_12.dll / cudnn64_9.dll; the extension can't find them via PATH on
+# Python 3.8+, so transcribe.py registers these packages' bin dirs with
+# os.add_dll_directory at import. Install with: pip install -e .[cuda]
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12==9.*",
+]
 
 [project.scripts]
 autocut = "autocut.cli:main"

@@ -92,7 +92,11 @@ def run(ep: Episode, *, force: bool = False) -> None:
     ffmpeg.run_ffmpeg(
         [
             *inputs,
-            "-filter_complex_script", ep.filter_script,
+            # -/filter_complex reads the graph from a file (the modern
+            # replacement for the removed -filter_complex_script). The graph is
+            # file-based because a many-overlay graph exceeds Windows' 8191-char
+            # command-line limit.
+            "-/filter_complex", ep.filter_script,
             "-map", "[vout]", "-map", "0:a",
             "-c:v", "libx264", "-preset", "slow", "-crf", CRF, "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
