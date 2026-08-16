@@ -91,25 +91,53 @@ def test_bad_rect_errors(tmp_path):
 
 # --- filter graph construction ---
 
-def test_speaker_graph_crops_then_keys_then_scales(tmp_path):
+def test_speaker_graph_no_key_crops_scales_alphamerges(tmp_path):
+    # Default rig: key disabled (black backdrop) -> crop -> scale -> mask.
     lay = layout_mod.load(_root(tmp_path)[0])
-    g = compose._build_speaker_graph(lay)
-    # crop uses the explicit source_crop; order is crop -> chromakey -> ... -> scale.
-    assert "crop=1389:2160:636:0" in g
-    assert g.index("crop=") < g.index("chromakey=") < g.index("despill=") < g.index("scale=1080:1680")
-    assert "chromakey=0x00b140:0.12:0.05" in g
+    g = compose._build_speaker_graph(lay, use_mask=True)
+    assert "crop=1389:2160:636:0" in g          # explicit source_crop
+    assert "chromakey" not in g and "despill" not in g
+    assert g.index("crop=") < g.index("scale=1080:1680")
+    assert "alphamerge[spk]" in g               # rounded-corner mask applied
+
+
+def test_speaker_graph_no_key_no_mask(tmp_path):
+    lay = layout_mod.load(_root(tmp_path)[0])
+    g = compose._build_speaker_graph(lay, use_mask=False)
+    assert "alphamerge" not in g
     assert g.strip().endswith("[spk]")
+
+
+def test_speaker_graph_keyed_when_enabled(tmp_path):
+    # Keeping the key path behind the flag: enabling it restores crop->key->scale.
+    yaml_text = _YAML.replace("key: {color:", "key: {enabled: true, color:")
+    lay = layout_mod.load(_root(tmp_path, yaml_text)[0])
+    g = compose._build_speaker_graph(lay, use_mask=True)
+    assert g.index("crop=") < g.index("chromakey=0x00b140:0.12:0.05") < g.index("scale=1080:1680")
+    assert "despill=type=green" in g
+    assert "blend=all_mode=multiply" in g       # keyed alpha combined with mask
 
 
 def test_composite_graph_overlays_at_rect_origins(tmp_path):
     lay = layout_mod.load(_root(tmp_path)[0])
-    g = compose._build_composite_graph(lay)
+    g = compose._build_composite_graph(lay, shadow=None, border_idx=None)
     assert "scale=3840:2160[bg]" in g
-    assert "overlay=x=160:y=240[tmp]" in g      # content rect origin
-    assert "overlay=x=2640:y=240[out]" in g     # speaker rect origin
-    assert "color=0x0b0b0d" in g                 # letterbox fill normalised from #
+    assert "overlay=x=160:y=240[base]" in g      # content rect origin
+    assert "overlay=x=2640:y=240[cspk]" in g     # speaker rect origin
+    assert "color=0x0b0b0d" in g                  # letterbox fill normalised from #
 
 
-def test_ff_color_normalises_hash():
+def test_composite_graph_shadow_and_border(tmp_path):
+    lay = layout_mod.load(_root(tmp_path)[0])
+    shadow = {"opacity": 0.5, "blur": 18.0, "offset": (0, 10)}
+    g = compose._build_composite_graph(lay, shadow=shadow, border_idx=3)
+    assert "gblur=sigma=18.0" in g               # shadow blur
+    assert "colorchannelmixer=aa=0.5" in g       # shadow opacity
+    assert "[3:v]overlay=x=2640:y=240[out]" in g  # border on top at speaker origin
+
+
+def test_color_helpers():
     assert compose._ff_color("#0b0b0d") == "0x0b0b0d"
     assert compose._ff_color("0x00b140") == "0x00b140"
+    assert compose._color_rgb("#f0f0f4") == (0xf0, 0xf0, 0xf4)
+    assert compose._color_rgb("0xff8040") == (255, 128, 64)

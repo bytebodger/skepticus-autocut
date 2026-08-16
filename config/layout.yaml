@@ -20,11 +20,20 @@ speaker:
   # than the centred value the spec assumes. [x, y, w, h] in source space.
   source_crop: [636, 0, 1389, 2160]
   key:
-    color: "0x00b140"
+    enabled: false          # recording against a black backdrop now — no key.
+    color: "0x00b140"       # kept for the green-screen path behind the flag.
     similarity: 0.12
     blend: 0.05
     despill: true
-  corner_radius: 0          # rounding lands in step 2 (speaker tuning)
+  corner_radius: 24         # rounded window via pre-rendered mask + alphamerge
+  border:                   # subtle framing so the window reads as intentional
+    width: 5
+    color: "#f0f0f4"
+  shadow:                   # soft drop shadow to lift the window off the bg
+    enabled: true
+    opacity: 0.55
+    blur: 18
+    offset: [0, 10]         # dx, dy in canvas px
 
 content:
   rect: [160, 240, 2400, 1680]      # x, y, w, h in canvas space
