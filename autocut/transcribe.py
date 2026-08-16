@@ -188,6 +188,15 @@ def run(ep: Episode, *, force: bool = False) -> dict:
         log.info("transcribe: cache hit for %s, skipping", ep.episode_id)
         return json.loads(ep.words_json.read_text(encoding="utf-8"))
 
+    # Dry-run must not load the (heavy, GPU) Whisper model or write outputs. It
+    # also means dry-run never imports faster_whisper, so it works on machines
+    # without the CUDA stack installed. Reuse an existing transcript if present.
+    if ffmpeg.is_dry_run():
+        log.info("transcribe: dry-run - skipping Whisper model run and silence pass")
+        if ep.words_json.exists():
+            return json.loads(ep.words_json.read_text(encoding="utf-8"))
+        return {"words": []}
+
     ep.transcript_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("transcribe: running %s on %s", MODEL, ep.speech_wav)

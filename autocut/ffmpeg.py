@@ -74,9 +74,11 @@ def ffprobe_path() -> str:
     return _binary("ffprobe")
 
 
-def _run(cmd: list[str], *, capture: bool, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, capture: bool, cwd: str | None = None, force: bool = False) -> subprocess.CompletedProcess[str]:
     log.info("run: %s%s", " ".join(cmd), f"  (cwd={cwd})" if cwd else "")
-    if _DRY_RUN:
+    # force=True bypasses dry-run for read-only queries (ffprobe) whose output the
+    # pipeline needs to stay correct. Encodes are never forced — dry-run logs them.
+    if _DRY_RUN and not force:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
     proc = subprocess.run(
         cmd,
@@ -118,12 +120,16 @@ def run_ffmpeg_capture_stderr(args: Sequence[str]) -> str:
 
 
 def ffprobe_json(args: Sequence[str]) -> dict:
-    """Run ffprobe with ``-of json`` and parse stdout."""
+    """Run ffprobe with ``-of json`` and parse stdout.
+
+    ffprobe is a read-only metadata query, and its result is required for the
+    pipeline to be correct (frame rates, source duration, cache keys). So it runs
+    even under ``--dry-run`` — otherwise probe would derive garbage from empty
+    output and overwrite a good ``probe.json``. Only the encode commands are
+    stubbed by dry-run.
+    """
     cmd = [ffprobe_path(), "-hide_banner", "-of", "json", *map(str, args)]
-    if _DRY_RUN:
-        log.info("run: %s", " ".join(cmd))
-        return {}
-    proc = _run(cmd, capture=True)
+    proc = _run(cmd, capture=True, force=True)
     return json.loads(proc.stdout or "{}")
 
 

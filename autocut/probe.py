@@ -206,6 +206,13 @@ def run(ep: Episode, *, force: bool = False) -> dict:
     _build_mezzanine(ep, probe["fps_rational"])
     _extract_speech_audio(ep)
 
+    # Dry-run only logs the encode commands above; the mezzanine/audio were not
+    # actually produced, so writing probe.json or marking the cache done would
+    # both clobber a good probe.json and falsely claim the outputs exist.
+    if ffmpeg.is_dry_run():
+        log.info("probe: dry-run - not writing probe.json or marking cache")
+        return probe
+
     ep.work.mkdir(parents=True, exist_ok=True)
     ep.probe_json.write_text(json.dumps(probe, indent=2), encoding="utf-8")
 

@@ -221,6 +221,11 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
     words = words_doc.get("words", [])
     silences = silence_doc.get("silences", [])
     fps = float(probe["fps"])
+    if probe.get("source_duration") is None:
+        raise FileNotFoundError(
+            f"probe.json for {ep.episode_id} has no source_duration — the probe "
+            f"is incomplete. Re-run: autocut probe {ep.episode_id} --force"
+        )
     duration = float(probe["source_duration"])
 
     cuts = _discover_cuts(words, silences, duration)

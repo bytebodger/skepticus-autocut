@@ -8,6 +8,7 @@ directly.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import sys
 from pathlib import Path
@@ -28,6 +29,28 @@ from .edl import ValidationError
 from .paths import resolve
 
 log = logging.getLogger("autocut")
+
+# Third-party runtime deps the pipeline needs. They live in the project
+# virtualenv; the usual way to trip over a missing one is invoking a system
+# Python (e.g. `python -m autocut`) instead of `.venv\Scripts\python.exe`.
+_RUNTIME_DEPS = {"faster_whisper", "ctranslate2", "fastapi", "uvicorn", "jinja2", "requests"}
+# Stages that import the (heavy, lazily-loaded) transcription stack. We check
+# these up front so a wrong interpreter fails in the first second instead of
+# after a multi-minute probe + mezzanine build.
+_STAGE_DEPS = {"transcribe": ("faster_whisper", "ctranslate2"),
+               "all": ("faster_whisper", "ctranslate2")}
+
+
+def _dependency_error(missing: list[str]) -> str:
+    named = f" required package(s): {', '.join(missing)}" if missing else " a required package"
+    return (
+        f"error: this Python interpreter is missing{named}.\n"
+        f"  interpreter: {sys.executable}\n"
+        f"  version:     Python {sys.version.split()[0]} (this project requires >=3.12,<3.13)\n"
+        "  The pipeline's dependencies live in the project virtualenv. Run it with:\n"
+        "    .venv\\Scripts\\python.exe -m autocut ...\n"
+        "  or activate the venv first:  .venv\\Scripts\\Activate.ps1"
+    )
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -154,6 +177,16 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     ffmpeg.set_dry_run(args.dry_run)
 
+    # Fail fast on a wrong interpreter, before any expensive stage runs.
+    # find_spec probes availability without importing the heavy modules. Skipped
+    # under --dry-run, which never imports the transcription stack.
+    if not args.dry_run:
+        missing = [d for d in _STAGE_DEPS.get(args.stage, ())
+                   if importlib.util.find_spec(d) is None]
+        if missing:
+            print(_dependency_error(missing), file=sys.stderr)
+            return 1
+
     ep = resolve(args.episode, args.root)
     try:
         result = args.func(ep, args)
@@ -164,6 +197,14 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ffmpeg.FFmpegError, ffmpeg.FFmpegNotFound) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except ModuleNotFoundError as e:
+        # A stage that lazily imports a known runtime dep (e.g. the review
+        # server's fastapi) hit a missing package — almost always the wrong
+        # interpreter. Give the actionable hint; let real bugs surface as-is.
+        if (e.name or "").split(".")[0] in _RUNTIME_DEPS:
+            print(_dependency_error([e.name]), file=sys.stderr)
+            return 1
+        raise
 
 
 if __name__ == "__main__":
