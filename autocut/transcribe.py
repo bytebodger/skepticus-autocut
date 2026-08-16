@@ -36,11 +36,57 @@ BEAM_SIZE = int(os.environ.get("AUTOCUT_WHISPER_BEAM", "5"))
 # deterministic across re-downloads.
 MODEL_REVISION: str | None = None
 
-SILENCE_NOISE_DB = -35
 SILENCE_MIN_DUR = 0.4
+# The silencedetect threshold is derived per-episode from the measured audio
+# level, because a hardcoded value can miss a recording's noise floor entirely
+# (one mic/room's speech pauses sit where another's speech does). We set it a
+# fixed margin below the mean volume: far enough under speech (mean RMS) that it
+# never marks real speech as silent, close enough to catch room-tone pauses.
+# 12 dB validated across two very different recordings (mean -27.6 and -30.2 dB);
+# the loud-failure guard below backstops any recording it still doesn't fit.
+SILENCE_MARGIN_DB = float(os.environ.get("AUTOCUT_SILENCE_MARGIN_DB", "12"))
+# Sane bounds for the derived threshold, guarding against a bad measurement.
+SILENCE_DB_CLAMP = (-55.0, -25.0)
+# Used only if the level measurement fails outright.
+SILENCE_NOISE_DB_FALLBACK = -35.0
+# Below this much audio, "zero silences" is not necessarily anomalous.
+SILENCE_SANITY_MIN_DUR = 30.0
 
 _SILENCE_START = re.compile(r"silence_start:\s*([0-9.]+)")
 _SILENCE_END = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)")
+_MEAN_VOLUME = re.compile(r"mean_volume:\s*(-?[0-9.]+)\s*dB")
+
+
+def _measure_mean_volume(ep: Episode) -> float | None:
+    """Mean volume of the speech audio in dBFS, via one volumedetect pass.
+
+    Returns None if the value can't be parsed (e.g. ffmpeg output changed)."""
+    stderr = ffmpeg.run_ffmpeg_capture_stderr([
+        "-i", ep.speech_wav, "-af", "volumedetect", "-f", "null", "-",
+    ])
+    m = _MEAN_VOLUME.search(stderr)
+    return float(m.group(1)) if m else None
+
+
+def _silence_threshold(ep: Episode) -> tuple[float, str, float | None]:
+    """Choose the silencedetect noise threshold for this episode.
+
+    Returns (noise_db, source, mean_volume_db). ``source`` is 'override',
+    'derived', or 'fallback'. A manual override wins:
+    ``AUTOCUT_SILENCE_NOISE_DB=-42`` forces the threshold; ``AUTOCUT_SILENCE_MARGIN_DB``
+    tunes the derived margin below mean volume.
+    """
+    override = os.environ.get("AUTOCUT_SILENCE_NOISE_DB")
+    if override is not None:
+        return float(override), "override", None
+    mean = _measure_mean_volume(ep)
+    if mean is None:
+        log.warning("silence: could not measure audio level; using fallback %.0f dB",
+                    SILENCE_NOISE_DB_FALLBACK)
+        return SILENCE_NOISE_DB_FALLBACK, "fallback", None
+    lo, hi = SILENCE_DB_CLAMP
+    db = round(max(lo, min(hi, mean - SILENCE_MARGIN_DB)), 1)
+    return db, "derived", round(mean, 1)
 
 
 # Handles returned by os.add_dll_directory remove their directory from the
@@ -131,10 +177,25 @@ def _transcribe_words(ep: Episode) -> dict:
     }
 
 
-def _detect_silence(ep: Episode) -> dict:
+def _speech_duration(ep: Episode, words: dict) -> float:
+    """Audio duration in seconds: the source duration from probe.json, or the
+    last word's end as a fallback. Used only for the sanity check."""
+    if ep.probe_json.exists():
+        try:
+            d = json.loads(ep.probe_json.read_text(encoding="utf-8")).get("source_duration")
+            if d is not None:
+                return float(d)
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            pass
+    ws = words.get("words") or []
+    return float(ws[-1]["end"]) if ws else 0.0
+
+
+def _detect_silence(ep: Episode, noise_db: float) -> list[dict]:
+    """Silence intervals from an independent silencedetect pass at ``noise_db``."""
     stderr = ffmpeg.run_ffmpeg_capture_stderr([
         "-i", ep.speech_wav,
-        "-af", f"silencedetect=noise={SILENCE_NOISE_DB}dB:d={SILENCE_MIN_DUR}",
+        "-af", f"silencedetect=noise={noise_db}dB:d={SILENCE_MIN_DUR}",
         "-f", "null", "-",
     ])
     intervals = []
@@ -155,11 +216,7 @@ def _detect_silence(ep: Episode) -> dict:
             })
             pending_start = None
 
-    return {
-        "noise_db": SILENCE_NOISE_DB,
-        "min_duration": SILENCE_MIN_DUR,
-        "silences": intervals,
-    }
+    return intervals
 
 
 def run(ep: Episode, *, force: bool = False) -> dict:
@@ -175,7 +232,10 @@ def run(ep: Episode, *, force: bool = False) -> dict:
         "model_revision": MODEL_REVISION,
         "compute_type": COMPUTE_TYPE,
         "beam_size": BEAM_SIZE,
-        "silence_noise_db": SILENCE_NOISE_DB,
+        # The threshold is derived from the (hashed) audio, but the margin/override
+        # that shape it must invalidate the cache when changed.
+        "silence_margin_db": SILENCE_MARGIN_DB,
+        "silence_noise_override": os.environ.get("AUTOCUT_SILENCE_NOISE_DB"),
         "silence_min_dur": SILENCE_MIN_DUR,
     })
 
@@ -204,7 +264,32 @@ def run(ep: Episode, *, force: bool = False) -> dict:
     ep.words_json.write_text(json.dumps(words, indent=2), encoding="utf-8")
 
     log.info("transcribe: silence pass")
-    silence = _detect_silence(ep)
+    noise_db, source, mean_db = _silence_threshold(ep)
+    intervals = _detect_silence(ep, noise_db)
+    log.info("transcribe: silence threshold %.1f dB (%s%s) -> %d silences",
+             noise_db, source,
+             f", mean {mean_db} dB" if mean_db is not None else "", len(intervals))
+
+    # Fail loud: zero silences across real speech is a broken result, not a valid
+    # one. Refuse to write an empty silence.json that would look like success and
+    # then starve autoauthor (spec: no silent-success failure modes).
+    speech_dur = _speech_duration(ep, words)
+    if not intervals and speech_dur > SILENCE_SANITY_MIN_DUR:
+        raise RuntimeError(
+            f"silencedetect found 0 silences in {speech_dur:.0f}s of audio at "
+            f"{noise_db} dB ({source}): implausible for speech. The threshold likely "
+            f"does not match this recording's noise floor. Override with "
+            f"AUTOCUT_SILENCE_NOISE_DB=<dB> (try a few dB lower) or tune "
+            f"AUTOCUT_SILENCE_MARGIN_DB, then re-run: autocut transcribe {ep.episode_id} --force"
+        )
+
+    silence = {
+        "noise_db": noise_db,
+        "noise_db_source": source,
+        "mean_volume_db": mean_db,
+        "min_duration": SILENCE_MIN_DUR,
+        "silences": intervals,
+    }
     ep.silence_json.write_text(json.dumps(silence, indent=2), encoding="utf-8")
 
     cache.mark_done(ep.transcript_dir, input_hash, extra={"stage": "transcribe"})

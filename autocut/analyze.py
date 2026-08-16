@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,13 @@ SENTENCE_GAP = 0.50   # a gap this long implies a sentence boundary
 # Single-word fillers only. Multi-word fillers ("you know", "I mean") are left
 # for Claude Code to judge in context — automating them is not reliably safe.
 FILLERS = {"um", "uh", "uhh", "umm", "erm", "hmm", "mmm", "er"}
+
+# Plausibility floor for a finished EDL. Talking-head source should yield at
+# least one cut per this many seconds; far fewer almost always means a broken or
+# empty silence.json upstream, not a genuinely gap-free take. Only checked on
+# sources longer than SPARSE_CHECK_MIN_DUR. Bypass with AUTOCUT_ALLOW_SPARSE_EDL=1.
+SPARSE_CHECK_MIN_DUR = 600.0       # only sanity-check sources longer than 10 min
+SPARSE_MAX_SECONDS_PER_DROP = 300.0  # expect >= 1 drop per 5 min
 
 
 def load_inputs(ep: Episode) -> tuple[dict, dict, dict]:
@@ -211,6 +219,42 @@ def _build_segments(drops: list[dict], duration: float, fps: float) -> list[dict
     return segments
 
 
+def _assert_plausible(ep: Episode, segments: list[dict], drops: int,
+                      duration: float, silences: list[dict]) -> None:
+    """Refuse to emit an implausibly sparse EDL for a long source.
+
+    A handful of segments for an hour of talking-head is not a valid edit — it is
+    the visible symptom of a silent upstream failure (usually an empty
+    silence.json). Raise rather than write output that looks like success.
+    """
+    if duration <= SPARSE_CHECK_MIN_DUR:
+        return
+    min_drops = duration / SPARSE_MAX_SECONDS_PER_DROP
+    if drops >= min_drops:
+        return
+
+    msg = (
+        f"autoauthor: {drops} drop(s) / {len(segments)} segment(s) for "
+        f"{duration / 60:.0f} min of source is implausibly few (expected at least "
+        f"{min_drops:.0f} drops). "
+    )
+    if not silences:
+        msg += (
+            f"silence.json is empty, so no pauses could be confirmed; the "
+            f"transcription silence pass failed. Re-run: "
+            f"autocut transcribe {ep.episode_id} --force. "
+        )
+    else:
+        msg += (
+            "Check the derived silence threshold (words/silence metadata) against "
+            "this recording's noise floor. "
+        )
+    if os.environ.get("AUTOCUT_ALLOW_SPARSE_EDL"):
+        log.warning(msg + "(AUTOCUT_ALLOW_SPARSE_EDL set - emitting anyway.)")
+        return
+    raise RuntimeError(msg + "Set AUTOCUT_ALLOW_SPARSE_EDL=1 to emit it anyway.")
+
+
 def autoauthor(ep: Episode) -> dict[str, Any]:
     """Produce a deterministic baseline EDL and write it to ``edl.json``.
 
@@ -223,7 +267,7 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
     fps = float(probe["fps"])
     if probe.get("source_duration") is None:
         raise FileNotFoundError(
-            f"probe.json for {ep.episode_id} has no source_duration — the probe "
+            f"probe.json for {ep.episode_id} has no source_duration; the probe "
             f"is incomplete. Re-run: autocut probe {ep.episode_id} --force"
         )
     duration = float(probe["source_duration"])
@@ -231,6 +275,7 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
     cuts = _discover_cuts(words, silences, duration)
     drops = _merge_and_snap(cuts, duration, fps)
     segments = _build_segments(drops, duration, fps)
+    _assert_plausible(ep, segments, len(drops), duration, silences)
 
     new_edl: dict[str, Any] = {
         "version": edl.SCHEMA_VERSION,

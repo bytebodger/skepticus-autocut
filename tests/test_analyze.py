@@ -144,6 +144,39 @@ def test_no_drop_shorter_than_minimum(tmp_path):
             assert s["out"] - s["in"] >= analyze.MIN_DROP - 1e-6
 
 
+def test_autoauthor_refuses_implausibly_sparse_edl(tmp_path):
+    # A long source that yields almost no cuts is the silent-failure symptom.
+    ep = _make_episode(tmp_path, [(1.0, 2.0, "hello"), (1400.0, 1401.0, "bye")],
+                       duration=1500.0, silences=[])
+    with pytest.raises(RuntimeError, match="implausibly few"):
+        analyze.autoauthor(ep)
+    assert not ep.edl_json.exists()  # refused to emit
+
+
+def test_sparse_edl_message_flags_empty_silence(tmp_path):
+    ep = _make_episode(tmp_path, [(1.0, 2.0, "hello"), (1400.0, 1401.0, "bye")],
+                       duration=1500.0, silences=[])
+    with pytest.raises(RuntimeError, match="silence.json is empty"):
+        analyze.autoauthor(ep)
+
+
+def test_sparse_edl_bypass_env_emits_with_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTOCUT_ALLOW_SPARSE_EDL", "1")
+    ep = _make_episode(tmp_path, [(1.0, 2.0, "hello"), (1400.0, 1401.0, "bye")],
+                       duration=1500.0, silences=[])
+    result = analyze.autoauthor(ep)  # warns, does not raise
+    assert ep.edl_json.exists()
+    assert result["segments"]
+
+
+def test_short_source_skips_sparse_check(tmp_path):
+    # Under the duration floor, a sparse EDL is fine (short clip legitimately has
+    # few cuts) — must not raise.
+    ep = _make_episode(tmp_path, [(5.0, 5.5, "hi"), (6.0, 8.0, "there")], duration=90.0)
+    result = analyze.autoauthor(ep)
+    assert result["segments"]
+
+
 # --------------------------------------------------------------------------- #
 # Cache
 # --------------------------------------------------------------------------- #

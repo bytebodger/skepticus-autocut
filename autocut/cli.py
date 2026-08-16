@@ -194,7 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValidationError as e:
         print(str(e), file=sys.stderr)
         return 1
-    except (FileNotFoundError, ffmpeg.FFmpegError, ffmpeg.FFmpegNotFound) as e:
+    except (FileNotFoundError, RuntimeError) as e:
+        # RuntimeError covers ffmpeg failures (FFmpegError/FFmpegNotFound subclass
+        # it) and the pipeline's loud plausibility guards (empty silence.json,
+        # implausibly sparse EDL). Print cleanly instead of a traceback.
         print(f"error: {e}", file=sys.stderr)
         return 1
     except ModuleNotFoundError as e:
