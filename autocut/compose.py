@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from . import cache, ffmpeg, layout as layout_mod
+from . import cache, content as content_mod, ffmpeg, layout as layout_mod
 from .paths import Episode
 
 log = logging.getLogger("autocut.compose")
@@ -134,13 +134,17 @@ def _build_speaker_graph(layout: dict, *, use_mask: bool) -> str:
     return f"{base}[scaled];\n[scaled][1:v]alphamerge[spk]\n"
 
 
-def _build_composite_graph(layout: dict, *, shadow: dict | None, border_idx: int | None) -> str:
+def _build_composite_graph(layout: dict, *, shadow: dict | None, border_idx: int | None,
+                           content_prefit: bool) -> str:
     cw, ch = layout_mod.canvas_size(layout)
     cxx, cxy, cwd, chd = layout_mod.rect(layout, "content")
     sx, sy, rw, rh = layout_mod.rect(layout, "speaker")
     fill = _ff_color(layout["content"].get("background", "#000000"))
     fit = layout["content"].get("fit", "contain")
-    if fit == "cover":
+    if content_prefit:
+        # The content track is already content-rect-sized and fitted per item.
+        content = "[1:v]null[content]"
+    elif fit == "cover":
         content = (f"[1:v]scale={cwd}:{chd}:force_original_aspect_ratio=increase,"
                    f"crop={cwd}:{chd}[content]")
     else:  # contain — letterbox, never crop the subject (spec section 4)
@@ -238,11 +242,16 @@ def _shadow_config(layout: dict) -> dict | None:
 def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> None:
     stage_dir = ep.compose_dir / "composite"
     bg = layout_mod.asset(layout, ep.root, "background", "image")
-    content = layout_mod.asset(layout, ep.root, "content", "placeholder")
+
+    # Content layer: the timed content track when content.json exists, else the
+    # static step-1 placeholder image.
+    track = content_mod.render_track(ep, layout, fps, force=force)
+    content_prefit = track is not None
+    content = track if content_prefit else layout_mod.asset(layout, ep.root, "content", "placeholder")
     if not ffmpeg.is_dry_run():
-        for path, what in ((bg, "background.image"), (content, "content.placeholder")):
+        for path, what in ((bg, "background.image"), (content, "content track/placeholder")):
             if not path.exists():
-                raise FileNotFoundError(f"layout.yaml {what} not found: {path}")
+                raise FileNotFoundError(f"{what} not found: {path}")
 
     sx, sy, rw, rh = layout_mod.rect(layout, "speaker")
     r = int(layout["speaker"].get("corner_radius", 0))
@@ -250,7 +259,9 @@ def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> No
     bw = int(border_cfg.get("width", 0))
     shadow = _shadow_config(layout)
 
-    inputs = ["-loop", "1", "-i", bg, "-loop", "1", "-i", content, "-i", ep.speaker_layer]
+    # The content track is a finite video; the placeholder is a looped still.
+    content_in = ["-i", content] if content_prefit else ["-loop", "1", "-i", content]
+    inputs = ["-loop", "1", "-i", bg, *content_in, "-i", ep.speaker_layer]
     border_idx = None
     if bw > 0:
         if r <= 0:
@@ -260,11 +271,12 @@ def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> No
             border_idx = 3
             inputs += ["-loop", "1", "-i", border_png]
 
-    graph = _build_composite_graph(layout, shadow=shadow, border_idx=border_idx)
+    graph = _build_composite_graph(layout, shadow=shadow, border_idx=border_idx, content_prefit=content_prefit)
     input_hash = cache.hash_inputs({
         "speaker": cache.hash_file(ep.speaker_layer) if (ep.speaker_layer.exists() and not ffmpeg.is_dry_run()) else "dry",
         "bg": cache.hash_file(bg) if (bg.exists() and not ffmpeg.is_dry_run()) else "dry",
         "content": cache.hash_file(content) if (content.exists() and not ffmpeg.is_dry_run()) else "dry",
+        "content_prefit": content_prefit,
         "graph": graph,
         "border": {"width": bw, "color": border_cfg.get("color")} if border_idx is not None else None,
         "shadow": shadow,

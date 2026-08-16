@@ -39,5 +39,9 @@ content:
   rect: [160, 240, 2400, 1680]      # x, y, w, h in canvas space
   fit: contain              # contain (letterbox) | cover (fill + crop)
   background: "#0b0b0d"     # letterbox fill when fit=contain
-  # Step-1 static placeholder shown in the content rect (no timing yet).
+  gap_behavior: hold        # hold (last item stays) | background (wallpaper shows)
+  transition:
+    type: crossfade         # crossfade | cut
+    duration: 0.35
+  # Fallback still shown in the content rect when there is no content.json.
   placeholder: assets/placeholder_content.png

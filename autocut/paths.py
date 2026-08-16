@@ -134,6 +134,24 @@ class Episode:
         """Step-1 static composite (short clip) for checking the geometry."""
         return self.compose_dir / "composite_10s.mp4"
 
+    @property
+    def content_dir(self) -> Path:
+        """Drop folder for b-roll images/clips + content.json (spec section 4)."""
+        return self.inbox / f"{self.episode_id}_content"
+
+    @property
+    def content_json(self) -> Path:
+        return self.content_dir / "content.json"
+
+    @property
+    def content_track(self) -> Path:
+        """Content-rect-sized video layer, full output duration. Own cached step."""
+        return self.compose_dir / "content_track.mov"
+
+    @property
+    def content_filter_script(self) -> Path:
+        return self.compose_dir / "content_track.filter"
+
     # --- output ---
     @property
     def out_dir(self) -> Path:
