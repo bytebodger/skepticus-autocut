@@ -33,7 +33,7 @@ log = logging.getLogger("autocut")
 # Third-party runtime deps the pipeline needs. They live in the project
 # virtualenv; the usual way to trip over a missing one is invoking a system
 # Python (e.g. `python -m autocut`) instead of `.venv\Scripts\python.exe`.
-_RUNTIME_DEPS = {"faster_whisper", "ctranslate2", "fastapi", "uvicorn", "jinja2", "requests"}
+_RUNTIME_DEPS = {"faster_whisper", "ctranslate2", "fastapi", "uvicorn", "jinja2", "requests", "yaml"}
 # Stages that import the (heavy, lazily-loaded) transcription stack. We check
 # these up front so a wrong interpreter fails in the first second instead of
 # after a multi-minute probe + mezzanine build.
@@ -108,6 +108,12 @@ def _cmd_qc(ep, args):
     qc_mod.run(ep)
 
 
+def _cmd_compose(ep, args):
+    """Phase-2 compositor, step 1: static composite for a geometry check."""
+    from . import compose as compose_mod  # lazy: keeps cli importable without pyyaml
+    compose_mod.run(ep, force=args.force)
+
+
 def _cmd_render(ep, args):
     """Everything after review: cut -> grade -> captions -> overlays -> composite -> qc."""
     cut_mod.run(ep, force=args.force)
@@ -155,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         "captions": _cmd_captions,
         "composite": _cmd_composite,
         "qc": _cmd_qc,
+        "compose": _cmd_compose,
         "render": _cmd_render,
         "all": _cmd_all,
     }

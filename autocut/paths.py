@@ -110,6 +110,30 @@ class Episode:
     def filter_script(self) -> Path:
         return self.work / "filter.txt"
 
+    # --- phase 2 compositor (compositor spec) ---
+    @property
+    def compose_dir(self) -> Path:
+        return self.work / "compose"
+
+    @property
+    def speaker_layer(self) -> Path:
+        """Keyed speaker layer — its own cached artifact so key params can be
+        tuned without re-running the composite. ProRes 4444 keeps the alpha."""
+        return self.compose_dir / "speaker.mov"
+
+    @property
+    def speaker_filter_script(self) -> Path:
+        return self.compose_dir / "speaker.filter"
+
+    @property
+    def compose_filter_script(self) -> Path:
+        return self.compose_dir / "composite.filter"
+
+    @property
+    def compose_preview(self) -> Path:
+        """Step-1 static composite (short clip) for checking the geometry."""
+        return self.compose_dir / "composite_10s.mp4"
+
     # --- output ---
     @property
     def out_dir(self) -> Path:

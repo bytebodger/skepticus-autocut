@@ -1,0 +1,34 @@
+# Phase-2 compositor layout (compositor spec section 2).
+# Every geometry value lives here — nothing is hardcoded in the pipeline.
+# Move the speaker to the left, resize the content window, etc. by editing this
+# file and re-running `autocut compose <episode>`.
+
+canvas:
+  width: 3840
+  height: 2160
+  fps: from_source          # never hardcode; read from probe.json
+
+background:
+  # Real 3840x2160 background. (A labelled grid placeholder also lives at
+  # assets/backgrounds/placeholder_bg.png if you want to eyeball exact pixels.)
+  image: assets/backgrounds/fiery-background-4k.png
+
+speaker:
+  side: right               # left | right
+  rect: [2640, 240, 1080, 1680]     # x, y, w, h in canvas space
+  # Explicit crop measured from a real frame on this rig (x offset 636), rather
+  # than the centred value the spec assumes. [x, y, w, h] in source space.
+  source_crop: [636, 0, 1389, 2160]
+  key:
+    color: "0x00b140"
+    similarity: 0.12
+    blend: 0.05
+    despill: true
+  corner_radius: 0          # rounding lands in step 2 (speaker tuning)
+
+content:
+  rect: [160, 240, 2400, 1680]      # x, y, w, h in canvas space
+  fit: contain              # contain (letterbox) | cover (fill + crop)
+  background: "#0b0b0d"     # letterbox fill when fit=contain
+  # Step-1 static placeholder shown in the content rect (no timing yet).
+  placeholder: assets/placeholder_content.png
