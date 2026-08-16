@@ -5,6 +5,8 @@ that source_to_output maps them correctly after cuts. These tests guard the most
 likely bug in the pipeline (spec section 5).
 """
 
+from fractions import Fraction
+
 import pytest
 
 from autocut import edl
@@ -81,6 +83,27 @@ def test_output_duration():
 def test_snap_to_frames():
     assert edl.snap(1.017, 30) == pytest.approx(round(1.017 * 30) / 30)
     assert edl.snap(1.0, 30) == 1.0
+
+
+def test_snap_non_30_rate():
+    # 24fps: 1.03s -> nearest 24th of a second.
+    assert edl.snap(1.03, 24) == pytest.approx(round(1.03 * 24) / 24)
+    # An exact frame boundary is a fixed point.
+    assert edl.snap(10 / 24, 24) == pytest.approx(10 / 24)
+
+
+def test_snap_fractional_rate_2997():
+    # 29.97fps sources (30000/1001) must snap to real frame boundaries, not to
+    # an integer-30 grid. Verify the snapped time lands an integer number of
+    # frames from zero at the true fractional rate.
+    fps = float(Fraction(30000, 1001))
+    for t in (0.5, 1.0, 5.005, 12.34):
+        snapped = edl.snap(t, fps)
+        assert snapped * fps == pytest.approx(round(t * fps))
+    # A 30000/1001 frame boundary differs from the integer-30 grid: frame 300
+    # sits at 10.01s, not 10.0s.
+    assert edl.snap(10.005, fps) == pytest.approx(300 / fps)
+    assert 300 / fps == pytest.approx(10.01, abs=1e-3)
 
 
 # --------------------------------------------------------------------------- #
