@@ -43,14 +43,32 @@ _SILENCE_START = re.compile(r"silence_start:\s*([0-9.]+)")
 _SILENCE_END = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)")
 
 
+# Handles returned by os.add_dll_directory remove their directory from the
+# search path when garbage-collected. Keep them alive for the process lifetime
+# so ctranslate2's load-time dependency resolution can't intermittently break.
+_cuda_dll_handles: list[object] = []
+
+
 def _add_cuda_dll_dirs() -> None:
     """Make the pip-installed CUDA runtime DLLs loadable.
 
-    On Windows, Python 3.8+ resolves an extension module's dependency DLLs
-    through a secure search that ignores PATH, so ctranslate2's .pyd can't find
-    cublas64_12.dll / cudnn64_9.dll even when their dirs are on PATH. Registering
-    the nvidia-*-cu12 packages' bin dirs with os.add_dll_directory fixes it. Must
-    run before faster_whisper (hence ctranslate2) is imported.
+    Two distinct load mechanisms need two distinct fixes (both verified against
+    ctranslate2 4.5.0 + nvidia-cudnn-cu12 9.x on Windows 11):
+
+    1. Load-time deps of ctranslate2's .pyd (cublas64_12.dll, cudnn64_9.dll).
+       Python 3.8+ resolves an extension module's dependency DLLs through a
+       secure search that ignores PATH, so os.add_dll_directory on the
+       nvidia-*-cu12 bin dirs is required — PATH alone does nothing here.
+
+    2. cuDNN 9's runtime-loaded sublibraries (cudnn_ops64_9.dll and friends).
+       cudnn64_9.dll pulls these in with a plain LoadLibrary when the first
+       tensor op runs. That nested load does NOT consult add_dll_directory
+       entries and only searches PATH, so the same dirs must go on PATH too.
+       Without the PATH prepend you get, at first inference:
+         Could not locate cudnn_ops64_9.dll ...
+         Invalid handle. Cannot load symbol cudnnCreateTensorDescriptor
+
+    Must run before faster_whisper (hence ctranslate2) is imported.
     """
     if os.name != "nt":
         return
@@ -64,7 +82,8 @@ def _add_cuda_dll_dirs() -> None:
         for pkg in Path(root).iterdir():
             bin_dir = pkg / "bin"
             if bin_dir.is_dir():
-                os.add_dll_directory(str(bin_dir))
+                _cuda_dll_handles.append(os.add_dll_directory(str(bin_dir)))
+                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
 
 
 def _transcribe_words(ep: Episode) -> dict:

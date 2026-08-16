@@ -5,12 +5,16 @@ description = "Automated video editing pipeline: raw MP4 in, cut/graded/captione
 requires-python = ">=3.12,<3.13"
 
 # Determinism: pin everything that touches transcription output. See spec section 15.
+# faster-whisper and ctranslate2 are a version-sensitive pair; pin both exactly.
+# faster-whisper 1.2.1 requires ctranslate2<5,>=4.0 and is verified against 4.5.0.
 dependencies = [
-    "faster-whisper==1.1.1",
+    "faster-whisper==1.2.1",
     "ctranslate2==4.5.0",
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
     "jinja2==3.1.5",
+    "setuptools<81", # ctranslate2 4.5.0 imports pkg_resources, removed in setuptools 82
+    "requests",        # faster-whisper imports it but doesn't declare it
 ]
 
 [project.optional-dependencies]
@@ -22,7 +26,7 @@ dev = [
 # Python 3.8+, so transcribe.py registers these packages' bin dirs with
 # os.add_dll_directory at import. Install with: pip install -e .[cuda]
 cuda = [
-    "nvidia-cublas-cu12",
+    "nvidia-cublas-cu12==12.*",
     "nvidia-cudnn-cu12==9.*",
 ]
 
