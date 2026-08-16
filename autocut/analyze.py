@@ -82,7 +82,7 @@ class _Cut:
         self.pad = pad  # whether internal edges should be padded
 
 
-def _discover_cuts(words: list[dict], duration: float) -> list[_Cut]:
+def _discover_cuts(words: list[dict], silences: list[dict], duration: float) -> list[_Cut]:
     cuts: list[_Cut] = []
     if not words:
         return cuts
@@ -95,14 +95,27 @@ def _discover_cuts(words: list[dict], duration: float) -> list[_Cut]:
     if duration - last["end"] > PAD:
         cuts.append(_Cut(last["end"], duration, "dead_air", 1.0, "trailing dead air", pad="left"))
 
-    # 2. Long mid-sentence silences. Padding leaves ~250ms so pacing stays human.
+    # 2. Long mid-sentence silences. A gap between consecutive Whisper word
+    #    timestamps is trimmed ONLY where the independent, energy-based
+    #    silencedetect pass confirms real dead air. Whisper routinely drops or
+    #    stretches words across a re-take or fast speech, leaving a multi-second
+    #    word gap that is actually full of dialogue — cutting those phantom gaps
+    #    silently deletes speech. Intersecting with silencedetect (and clamping
+    #    to the gap, which lies between two words) keeps every cut on real
+    #    silence. Padding leaves ~PAD on each side so pacing stays human.
     for a, b in zip(words, words[1:]):
-        gap = b["start"] - a["end"]
-        if gap > LONG_SILENCE:
-            cuts.append(_Cut(
-                a["end"], b["start"], "long_silence", 1.0,
-                f"{gap:.2f}s silence trimmed", pad="both",
-            ))
+        if b["start"] - a["end"] <= LONG_SILENCE:
+            continue
+        for iv in silences:
+            s = max(a["end"], float(iv["start"]))
+            e = min(b["start"], float(iv["end"]))
+            # Only trim a confirmed-silent span that itself exceeds the editorial
+            # threshold; a sub-threshold sliver of real silence is left alone.
+            if e - s >= LONG_SILENCE:
+                cuts.append(_Cut(
+                    s, e, "long_silence", 1.0,
+                    f"{e - s:.2f}s silence trimmed", pad="both",
+                ))
 
     # 3. Single-word fillers. Word boundaries only; skip near sentence starts.
     for idx, w in enumerate(words):
@@ -204,12 +217,13 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
     Existing human overrides (``override: true``) are preserved — re-running
     stage 3 must never clobber a review veto (spec section 6).
     """
-    words_doc, _silence, probe = load_inputs(ep)
+    words_doc, silence_doc, probe = load_inputs(ep)
     words = words_doc.get("words", [])
+    silences = silence_doc.get("silences", [])
     fps = float(probe["fps"])
     duration = float(probe["source_duration"])
 
-    cuts = _discover_cuts(words, duration)
+    cuts = _discover_cuts(words, silences, duration)
     drops = _merge_and_snap(cuts, duration, fps)
     segments = _build_segments(drops, duration, fps)
 

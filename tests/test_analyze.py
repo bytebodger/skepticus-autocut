@@ -8,7 +8,7 @@ from autocut import analyze, cache, edl
 from autocut.paths import resolve
 
 
-def _make_episode(tmp_path, words, duration, fps=30):
+def _make_episode(tmp_path, words, duration, fps=30, silences=None):
     ep = resolve("ep001", root=tmp_path)
     ep.transcript_dir.mkdir(parents=True, exist_ok=True)
     ep.work.mkdir(parents=True, exist_ok=True)
@@ -17,7 +17,10 @@ def _make_episode(tmp_path, words, duration, fps=30):
         "words": [{"i": i, "start": s, "end": e, "word": w, "prob": 1.0}
                   for i, (s, e, w) in enumerate(words)],
     }), encoding="utf-8")
-    ep.silence_json.write_text(json.dumps({"silences": []}), encoding="utf-8")
+    ep.silence_json.write_text(json.dumps({
+        "silences": [{"start": s, "end": e, "duration": round(e - s, 3)}
+                     for s, e in (silences or [])],
+    }), encoding="utf-8")
     ep.probe_json.write_text(json.dumps({
         "fps": fps, "source_duration": duration, "raw_sha256": "abc",
     }), encoding="utf-8")
@@ -38,13 +41,43 @@ def test_autoauthor_trims_leading_and_trailing_dead_air(tmp_path):
 
 
 def test_autoauthor_trims_long_silence(tmp_path):
+    # 2.0s word gap that silencedetect confirms is real dead air -> trimmed.
     ep = _make_episode(tmp_path, [
         (0.5, 1.0, "start"),
         (3.0, 3.5, "resume"),  # 2.0s gap -> long silence
         (3.6, 4.0, "end"),
-    ], duration=5.0)
+    ], duration=5.0, silences=[(1.0, 3.0)])
     result = analyze.autoauthor(ep)
     assert any(s.get("reason") == "long_silence" for s in result["segments"] if s["action"] == "drop")
+
+
+def test_word_gap_without_acoustic_silence_is_not_cut(tmp_path):
+    # The dialogue-loss bug: Whisper left a 2.0s gap between words (a re-take it
+    # failed to transcribe), but silencedetect finds NO dead air there. That gap
+    # is real speech and must never be trimmed as a "long silence".
+    ep = _make_episode(tmp_path, [
+        (0.5, 1.0, "start"),
+        (3.0, 3.5, "resume"),  # 2.0s word gap, but the audio is not silent
+        (3.6, 4.0, "end"),
+    ], duration=5.0, silences=[])  # silencedetect found no silence in the gap
+    result = analyze.autoauthor(ep)
+    assert not any(s.get("reason") == "long_silence" for s in result["segments"] if s["action"] == "drop")
+
+
+def test_long_silence_clamped_to_confirmed_silent_span(tmp_path):
+    # A 3.0s word gap where only the middle 1.0s is truly silent (Whisper missed
+    # speech at the edges). Only the confirmed-silent span may be cut, so the
+    # surrounding speech survives.
+    ep = _make_episode(tmp_path, [
+        (0.5, 1.0, "a"),
+        (4.0, 4.5, "b"),   # gap 1.0 -> 4.0; silence only 2.0-3.0
+    ], duration=6.0, silences=[(2.0, 3.0)])
+    result = analyze.autoauthor(ep)
+    drop = next(s for s in result["segments"] if s.get("reason") == "long_silence")
+    # Cut stays within the silent span (padded inward), never into 1.0-2.0 or
+    # 3.0-4.0 where Whisper-missed speech lives.
+    assert drop["in"] >= 2.0 - 1e-6
+    assert drop["out"] <= 3.0 + 1e-6
 
 
 def test_autoauthor_removes_filler_midsentence(tmp_path):
