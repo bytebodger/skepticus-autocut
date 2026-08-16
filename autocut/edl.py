@@ -110,6 +110,12 @@ def validate(edl: dict[str, Any], *, source_duration: float | None = None) -> li
     if not isinstance(fps, (int, float)) or fps <= 0:
         errors.append(f"fps must be a positive number, got {fps!r}")
 
+    # Tolerance for the out-vs-duration check: the final keep lands on the last
+    # frame boundary and its 3dp-rounded time can sit a sub-millisecond above a
+    # 6dp source duration. Anything within one frame is frame-snap/rounding, not
+    # a real overshoot. Fall back to a small epsilon if fps is unusable.
+    one_frame = (1.0 / fps) if isinstance(fps, (int, float)) and fps > 0 else 1e-6
+
     segments = edl.get("segments")
     if not isinstance(segments, list) or not segments:
         errors.append("segments must be a non-empty list")
@@ -141,11 +147,18 @@ def validate(edl: dict[str, Any], *, source_duration: float | None = None) -> li
             errors.append(f"{loc}: out ({out_t}) must be > in ({in_t})")
         if in_t < 0:
             errors.append(f"{loc}: in ({in_t}) is negative")
-        if source_duration is not None and out_t > source_duration + 1e-6:
-            errors.append(
-                f"{loc}: out ({out_t}) exceeds source duration ({source_duration}). "
-                "Likely an output-timebase value leaked into the EDL."
+        if source_duration is not None and out_t > source_duration + one_frame + 1e-6:
+            overshoot = out_t - source_duration
+            msg = (
+                f"{loc}: out ({out_t}) exceeds source duration ({source_duration}) "
+                f"by {overshoot:.3f}s, more than one frame ({one_frame:.3f}s)."
             )
+            # A sub-frame overshoot is just frame-snap/rounding (tolerated above).
+            # Only a gross overshoot points at an output-timebase (post-cut)
+            # value having leaked into the EDL — don't cry wolf otherwise.
+            if overshoot > max(1.0, 10 * one_frame):
+                msg += " Likely an output-timebase value leaked into the EDL."
+            errors.append(msg)
         # Segments must tile in source order (no overlaps, no going backwards).
         if prev_out is not None and in_t + 1e-6 < prev_out:
             errors.append(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -168,8 +169,16 @@ def _build_segments(drops: list[dict], duration: float, fps: float) -> list[dict
         nonlocal counter
         if seg_out - seg_in < 1e-6:
             return
+        out_val = round(seg_out, 3)
+        # The final keep lands on the last frame boundary, which sits a hair
+        # below the source duration; rounding its out up to 3dp can nudge it a
+        # fraction of a millisecond *past* the (6dp) source duration and trip
+        # validate's out-vs-duration check. Never emit an out beyond the source
+        # — floor to 3dp in that case instead of rounding to nearest.
+        if out_val > duration:
+            out_val = math.floor(seg_out * 1000) / 1000
         seg = {"id": f"s{counter:03d}", "in": round(seg_in, 3),
-               "out": round(seg_out, 3), "action": action}
+               "out": out_val, "action": action}
         seg.update(extra)
         segments.append(seg)
         counter += 1
@@ -181,7 +190,9 @@ def _build_segments(drops: list[dict], duration: float, fps: float) -> list[dict
             reason=d["reason"], confidence=round(d["confidence"], 2), note=d["note"])
         cursor = d["end"]
 
-    end = edl.snap(duration, fps)
+    # Keep to the end of the source: snap to a frame boundary, but clamp to the
+    # source duration so a frame boundary that rounds up can never overshoot it.
+    end = min(edl.snap(duration, fps), duration)
     if end > cursor + 1e-6:
         add(cursor, end, "keep")
     return segments
