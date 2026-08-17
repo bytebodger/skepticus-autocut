@@ -120,6 +120,12 @@ def _cmd_shotlist(ep, args):
     shotlist_mod.run(ep, force=args.force)
 
 
+def _cmd_visuals(ep, args):
+    """Phase-3 visuals: generate illustration candidates from shotlist.json."""
+    from . import visuals as visuals_mod  # lazy: keeps cli importable without numpy/genai
+    visuals_mod.run(ep, force=args.force)
+
+
 def _cmd_render(ep, args):
     """Everything after review: cut -> grade -> captions -> overlays -> composite -> qc."""
     cut_mod.run(ep, force=args.force)
@@ -168,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
         "composite": _cmd_composite,
         "qc": _cmd_qc,
         "shotlist": _cmd_shotlist,
+        "visuals": _cmd_visuals,
         "render": _cmd_render,
         "all": _cmd_all,
     }

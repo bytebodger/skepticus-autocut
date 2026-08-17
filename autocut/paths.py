@@ -158,6 +158,16 @@ class Episode:
         """Authored shot list (words.json -> shotlist.json), spec section 5."""
         return self.work / "shotlist.json"
 
+    @property
+    def visuals_dir(self) -> Path:
+        """Generated illustration candidates + manifest (spec section 9)."""
+        return self.work / "visuals"
+
+    @property
+    def visuals_manifest(self) -> Path:
+        """Resumable checkpoint + per-shot generation record."""
+        return self.visuals_dir / "manifest.json"
+
     # --- output ---
     @property
     def out_dir(self) -> Path:

@@ -18,6 +18,7 @@ dependencies = [
     "python-multipart",
     "pyyaml",          # config/layout.yaml for the phase-2 compositor
     "anthropic",       # LLM shot-list authoring (phase-3 visuals)
+    "numpy",           # placeholder image backend + PNG encoding (phase-3 visuals)
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,12 @@ dev = [
 cuda = [
     "nvidia-cublas-cu12==12.*",
     "nvidia-cudnn-cu12==9.*",
+]
+# Hosted, reference-image-conditioned illustration backend (phase-3 visuals).
+# The default backend in config/layout.yaml; needs GEMINI_API_KEY at runtime.
+# The offline `placeholder` backend needs none of this. Install: pip install -e .[gemini]
+gemini = [
+    "google-genai",
 ]
 
 [project.scripts]

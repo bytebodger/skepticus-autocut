@@ -4,8 +4,14 @@
 # file and re-running `autocut compose <episode>`.
 
 # Swappable per-episode visual style — a directory styles/<name>/ holding
-# STYLE.md, tokens.css, and references/ (visuals spec section 3). Select by name.
+# STYLE.md, style.yaml, tokens.css, and references/ (visuals spec section 3).
 style: default
+
+# Illustration generation (visuals spec sections 4, 8, 9).
+visuals:
+  backend: gemini           # gemini (hosted, reference-conditioned) | placeholder
+  candidates: 4             # candidates generated per illustration shot
+  size: [1536, 1024]        # width, height
 
 canvas:
   width: 3840

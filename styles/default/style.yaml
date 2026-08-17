@@ -1,0 +1,27 @@
+# Machine-readable extract of STYLE.md, consumed by the illustration generator
+# (visuals spec section 8). STYLE.md remains the human bible; keep these in sync.
+# Bump `version` whenever a fragment changes — it is part of the generation
+# cache key, so a change re-generates.
+version: 1
+
+# Appended to every generation; this is what holds the look across episodes.
+style_fragment: >-
+  flat vector illustration, limited palette of four to six colours, simple bold
+  shapes, obviously hand-drawn, editorial, no gradients, no photographic detail
+
+# Always applied; the anti-photorealism terms are load-bearing (spec section 3).
+negative_fragment: >-
+  photograph, photorealistic, 3d render, realistic, hyperdetailed, cinematic
+  lighting, depth of field, lens flare, text, letters, words, watermark, signature
+
+# Named stylistic wrappers, selected per shot via the shot's `variant` (empty by
+# default). Keep them inside the same palette so they still read as one channel.
+variants:
+  engraving: "rendered as a pen-and-ink engraving, fine cross-hatching, monochrome linework"
+  woodcut: "rendered as a bold woodcut print, high contrast, carved texture"
+  diagram: "rendered as a clean flat technical diagram, schematic, unlabelled"
+
+# Generation parameters. `model`/`size` are advisory to the backend.
+params:
+  model: gemini-2.5-flash-image
+  size: [1536, 1024]
