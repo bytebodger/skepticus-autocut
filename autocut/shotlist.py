@@ -1,27 +1,36 @@
-"""Phase-3 visuals — shot list authoring (visuals spec section 5).
+"""Phase-3 visuals — shot list authoring (visuals spec sections 2, 5, 12).
 
 Reads ``words.json`` and writes ``shotlist.json``. A heuristic segmenter splits
-the transcript into ~20s passages; an LLM then makes the editorial decision for
-each passage — illustration, infographic, or neither — writes a real subject
-(a noun phrase with context) and a rich concept (what the image should depict,
-composition and all), and for infographics extracts the data.
+the transcript into ~20s passages; an LLM then picks, for each passage, the one
+composition that best carries it from the full taxonomy (spec section 2), or
+``none``.
 
-A rule-based matcher can't tell that "English" refers to a translation, that
-"Each" isn't a subject, or that "Psalm 23" is a citation and not chart data.
-That judgment is the LLM's job here; the code owns segmentation, batching,
-caching, and the hard data rule.
+The taxonomy replaces the old illustration/infographic binary — that binary is
+why 57 of 60 ``context`` shots came back as illustrations: anything that wasn't a
+chart fell through to the image model. Now the LLM chooses among twelve rendered
+HyperFrames compositions (``pull_quote``, ``term_card``, ``comparison``,
+``bullet_reveal``, ``argument_diagram``, ``title_card``, ``chart``, ``timeline``,
+``table``, ``map``, ``diagram``, ``vector_scene``) plus ``generated_image`` (the
+escape hatch) and ``none``. It is told to prefer the most structured type the
+passage supports; a healthy episode lands near 70% structured / 20% vector_scene
+/ 10% generated.
 
-The data rule (this supersedes the spec's ``data_status`` model — removed):
-only numbers actually spoken in a passage may be charted, extracted verbatim.
-Scripture citations, dates in prose, and rhetorical numbers are not data. If a
-chart is warranted but the figures weren't spoken, the shot is demoted to an
-illustration (or dropped) at authoring time — never a placeholder, never a
-render-blocking stub. Every infographic in the output has real props.
+``generated_image`` is the exception, not the engine. Every one must carry a
+``why_generated`` justifying what made a composed vector scene impossible; a weak
+justification means the classification is probably wrong.
+
+The data rule is unchanged: only numbers actually spoken in a passage may be
+charted, extracted verbatim. Scripture citations, dates in prose, and rhetorical
+numbers are not data. If a chart is warranted but the figures weren't spoken, the
+shot is demoted to another type (or dropped) at authoring time — never a
+placeholder, never a render-blocking stub. Every ``chart`` in the output has real
+spoken numbers.
 
 Passages are batched per API call; ``shotlist.json`` is cached on the transcript
 hash + prompt version + model, so it is a durable artifact — re-running does not
 re-author unless ``--force`` or an input changes. A final sequence-level pass,
-with the whole list in context, prunes repetition and bad pacing.
+with the whole list in context, prunes repetition and bad pacing, and breaks up
+runs of the same composition type (the lecture-slide-deck failure, section 12).
 """
 
 from __future__ import annotations
@@ -40,10 +49,10 @@ from .paths import Episode
 log = logging.getLogger("autocut.shotlist")
 
 # Bump when the prompts or schema change, so cached shot lists re-author.
-PROMPT_VERSION = "llm-1"
+PROMPT_VERSION = "llm-2"
 MODEL = os.environ.get("AUTOCUT_SHOTLIST_MODEL", "claude-opus-4-8")
 BATCH_SIZE = 14          # passages per authoring call
-MAX_OUTPUT_TOKENS = 10000
+MAX_OUTPUT_TOKENS = 16000
 
 # Segmentation: one visual every ~15-25s (spec section 5). Passages target the
 # middle of that band; the LLM decides which actually warrant a visual.
@@ -53,9 +62,19 @@ MIN_SHOT_DUR = 4.0
 MAX_SHOT_DUR = 25.0
 TERMINAL = (".", "?", "!")
 
-COMPOSITIONS = ("line_chart", "bar_chart", "stacked_area", "timeline",
-                "definition_card", "pull_quote", "comparison_table",
-                "argument_diagram", "bullet_reveal")
+# The twelve rendered HyperFrames compositions (spec section 2/3). Order is the
+# taxonomy's own grouping: text/argument, data/time, space/structure, pictorial.
+COMPOSITIONS = (
+    "pull_quote", "term_card", "comparison", "bullet_reveal",
+    "argument_diagram", "title_card",     # text and argument
+    "chart", "timeline", "table",          # data and time
+    "map", "diagram",                      # space and structure
+    "vector_scene",                        # pictorial, library-composed
+)
+# Everything the LLM may choose: the twelve + the generated escape hatch + none.
+KINDS = COMPOSITIONS + ("generated_image", "none")
+# Distribution buckets for the 70/20/10 health check (spec section 2).
+STRUCTURED = frozenset(COMPOSITIONS) - {"vector_scene"}
 
 
 # --------------------------------------------------------------------------- #
@@ -97,12 +116,14 @@ def _passages(sents: list[dict]) -> list[dict]:
 
 class Decision(BaseModel):
     index: int
-    kind: Literal["illustration", "infographic", "none"]
-    subject: str      # illustration: a noun phrase WITH context ("" otherwise)
-    concept: str      # illustration: what the image depicts, composition and all
-    variant: str      # illustration: named stylistic wrapper, else ""
-    composition: str  # infographic: one of COMPOSITIONS, else ""
-    props_json: str   # infographic: verbatim data as a JSON object, else "{}"
+    kind: Literal[
+        "pull_quote", "term_card", "comparison", "bullet_reveal",
+        "argument_diagram", "title_card", "chart", "timeline", "table",
+        "map", "diagram", "vector_scene", "generated_image", "none",
+    ]
+    props_json: str        # rendered compositions: content as a JSON object, else "{}"
+    concept: str           # vector_scene / generated_image: the scene to depict, else ""
+    why_generated: str     # generated_image ONLY: what made a vector scene impossible
     confidence: float
 
 
@@ -120,56 +141,105 @@ class SequenceReview(BaseModel):
     reviews: list[Review]
 
 
-AUTHOR_SYSTEM = f"""\
+AUTHOR_SYSTEM = """\
 You are the shot-list author for Skepticus, a video-essay channel about biblical
-criticism and Christian apologetics. You decide what on-screen visual, if any, a
-passage of the transcript should get. The channel's look is flat, simple,
-obviously-drawn illustration — never photorealism — plus deterministically
-rendered infographics.
+criticism and Christian apologetics. For each passage of the transcript you
+choose the single on-screen composition that best carries it — or "none".
 
-For each passage, choose exactly one kind:
+The content window is a RENDERED SLIDE SURFACE, not an image slot. The visual
+thread is composed from deterministic HyperFrames compositions — text, data,
+diagrams, and flat vector scenes. Generated imagery is a rare escape hatch, not
+the default. PREFER THE MOST STRUCTURED TYPE THE PASSAGE SUPPORTS.
 
-- "illustration" — the passage has a concrete visual referent: a place, object,
-  building, document, historical scene, landscape, or figure. Provide:
-    - subject: a short NOUN PHRASE WITH CONTEXT, not a bare token. Good:
-      "the translation of the Hebrew Bible into English"; "the Council of Nicaea
-      in 325". Bad: "English", "Council".
-    - concept: one sentence describing what the image should DEPICT — the
-      composition, not a label. Concrete, simple, no legible text, never
-      photorealistic. Good: "a weathered printing press stamping English words
-      over faded Hebrew letters, flat editorial illustration".
-    - variant: usually "". Only set a stylistic wrapper (engraving, woodcut,
-      diagram) when it clearly suits the subject (e.g. a confronting scene).
+Choose exactly one `kind`. Put the composition's content in props_json as a JSON
+object (shapes below are guidance — extract what the passage actually gives you):
 
-- "infographic" — ONLY when the passage states real data aloud: actual numbers
-  or statistics to chart, a definition stated in words, a quotation worth
-  showing, or named categories compared with figures. Provide:
-    - composition: one of {", ".join(COMPOSITIONS)}.
-    - props_json: the REAL content, extracted VERBATIM from the passage, as a
-      JSON object. For a chart, the actual spoken numbers with their labels. For
-      definition_card, the term and its definition. For pull_quote, the quote
-      and any attribution.
-    NEVER invent, estimate, or interpolate data. Scripture citations (Psalm 23,
-    John 3:16, Genesis 1), chapter/verse numbers, dates mentioned in prose,
-    ordinals, and rhetorical numbers ("one word", "a thousand times") are NOT
-    chartable data. If a chart would be warranted but the figures were not
-    actually spoken, do NOT emit an infographic — choose "illustration" if the
-    passage supports a concrete visual, otherwise "none".
+TEXT AND ARGUMENT
+- pull_quote      the passage quotes something (scripture, a scholar, an
+                  apologist) accurately. {"quote": "...", "attribution": "..."}
+- term_card       a word and its definition (Hebrew/Greek terms, technical
+                  vocabulary). {"term": "...", "definition": "..."}
+- comparison      two or three things side by side (almah vs betulah, competing
+                  translations, two positions).
+                  {"items": [{"label": "...", "detail": "..."}, ...]}
+- bullet_reveal   enumerated points revealed in sequence. {"bullets": ["...", ...]}
+- argument_diagram premises leading to a conclusion; branches for a dilemma,
+                  chains for causal claims.
+                  {"premises": ["..."], "conclusion": "..."}
+- title_card      a section marker. {"title": "...", "subtitle": "..."}
 
-- "none" — abstract argument with no concrete visual and no data. Emit "none".
-  Long stretches of pure argument are normal and correct; prefer fewer visuals
-  and longer holds over forcing an image onto an abstract point.
+DATA AND TIME
+- chart           line/bar/stacked, ONLY from numbers spoken in THIS passage.
+                  {"chart_type": "bar|line|stacked",
+                   "series": [{"label": "...", "value": "15.7 million"}, ...]}
+- timeline        dated events in sequence.
+                  {"events": [{"date": "...", "label": "..."}, ...]}
+- table           structured comparison across several rows.
+                  {"columns": ["..."], "rows": [["...", "..."], ...]}
 
-Fill every field on every decision. Use "" / "{{}}" for fields that don't apply
-to the chosen kind. confidence is 0-1. Return one decision per passage index.\
+SPACE AND STRUCTURE
+- map             geography (the ancient Near East, the spread of a movement,
+                  council locations). {"region": "...", "markers": ["..."]}
+- diagram         relationships/hierarchies/structures (a manuscript stemma, a
+                  canon's formation). {"nodes": ["..."], "edges": [["a", "b"]]}
+
+PICTORIAL
+- vector_scene    a scene composed from flat, on-brand SVG parts (figures,
+                  buildings, landscape, objects). Leave props_json "{}"; put ONE
+                  sentence describing the scene in `concept`. This is the default
+                  for a concrete visual referent that isn't better served above.
+- generated_image THE ESCAPE HATCH. Only when a scene genuinely needs depicting
+                  and CANNOT be composed from flat vector parts. Put what to
+                  depict (flat/illustrative, never photorealistic) in `concept`,
+                  AND set `why_generated` to one sentence naming what made a
+                  vector scene impossible — specific historical detail, an
+                  atmospheric establishing shot, a one-off subject not worth new
+                  components. If you cannot write a strong why_generated, it is
+                  not a generated_image — use vector_scene.
+
+NONE
+- none            abstract argument with no concrete visual and no data. Long
+                  stretches of pure argument are normal; prefer fewer visuals and
+                  longer holds over forcing something on-screen.
+
+SELECTION PRIORITY — walk this in order and take the FIRST that fits:
+  1  quotes something                 -> pull_quote
+  2  defines a term                   -> term_card
+  3  contrasts two or three things    -> comparison
+  4  enumerates points                -> bullet_reveal
+  5  structured argument (premises->conclusion) -> argument_diagram
+  6  states numbers ALOUD             -> chart
+  7  walks through time               -> timeline
+  8  is about a place                 -> map
+  9  a scene the SVG library can compose -> vector_scene
+ 10  a scene it CANNOT compose        -> generated_image
+ 11  none of the above                -> none
+Also reach for title_card (a section marker), table (a multi-row comparison), or
+diagram (an explicit structure/hierarchy) when they clearly fit.
+
+DATA RULE — only numbers SPOKEN ALOUD in the passage may be charted, extracted
+verbatim with their labels. Scripture citations (Psalm 23, John 3:16, Genesis 1),
+chapter/verse numbers, dates in prose, ordinals, and rhetorical numbers ("a
+thousand times") are NOT data. If a chart would be warranted but the figures were
+not actually spoken, DEMOTE to another type (or "none") — never an empty chart,
+never a placeholder. NEVER invent, estimate, or interpolate data.
+
+generated_image should be RARE. Reach for a rendered composition or vector_scene
+first; the image model is the last resort. Fill only the fields the chosen kind
+needs; leave the rest "" or "{}". confidence is 0-1. Return one decision per
+passage index.\
 """
 
 COHERENCE_SYSTEM = """\
-You are reviewing a finished shot list as a whole sequence, in order. Drop shots
-that hurt the sequence:
-- two near-identical subjects or the same composition back-to-back,
-- rapid oscillation between chart and illustration every few seconds,
-- runs that are too dense (aim for roughly one visual every 15-25 seconds).
+You are reviewing a finished shot list as one sequence, in playback order. Drop
+shots that hurt the flow. Watch especially for:
+- RUNS OF THE SAME COMPOSITION TYPE. Several text cards in a row (pull_quote,
+  term_card, bullet_reveal, argument_diagram, title_card ...) read as a lecture
+  slide deck. Break up a long run of one type by dropping its weakest members so
+  the sequence varies; a map, chart, or vector_scene between them restores rhythm.
+- two near-identical subjects, or the same composition back-to-back.
+- rapid oscillation between types every few seconds.
+- density that is too high (aim for roughly one visual every 15-25 seconds).
 Keep the strong, well-paced shots; don't thin the list below that density. For
 each shot id, return keep or drop with a one-line reason.\
 """
@@ -198,9 +268,20 @@ def _author_batch(client, passages: list[dict], offset: int) -> list[Decision]:
     return _call_structured(client, system=AUTHOR_SYSTEM, user=user, output_format=BatchResult).decisions
 
 
+def _parse_props(props_json: str) -> dict:
+    """Parse the decision's props into a non-empty dict, or {} if unusable."""
+    try:
+        v = json.loads(props_json) if props_json and props_json.strip() else {}
+    except json.JSONDecodeError:
+        return {}
+    return v if isinstance(v, dict) and v else {}
+
+
 def _to_shot(d: Decision, passage: dict) -> dict | None:
-    """Assemble a shot from a decision + its passage, enforcing the data rule.
-    Returns None to drop (neither, or an infographic without real props)."""
+    """Assemble a shot from a decision + its passage, enforcing the data rule and
+    the generated_image justification. Returns None to drop the shot ("none", a
+    content composition with no usable props, or a generated_image that can't
+    justify itself)."""
     if d.kind == "none":
         return None
     source_time = round(passage["start"], 3)
@@ -208,22 +289,37 @@ def _to_shot(d: Decision, passage: dict) -> dict | None:
     shot = {"kind": d.kind, "source_time": source_time, "duration": duration,
             "transcript": passage["text"], "confidence": round(float(d.confidence), 2)}
 
-    if d.kind == "illustration":
-        if not d.subject.strip() or not d.concept.strip():
+    if d.kind == "generated_image":
+        # The escape hatch must justify why a vector scene couldn't do it. A
+        # generated_image without both a concept and a real why_generated is
+        # almost always a misclassification — drop it rather than ship it.
+        if not d.concept.strip() or not d.why_generated.strip():
+            log.warning("shotlist: dropping generated_image at %.1fs without concept/why_generated",
+                        source_time)
             return None
-        shot.update(subject=d.subject.strip(), concept=d.concept.strip(),
-                    variant=d.variant.strip())
+        shot.update(concept=d.concept.strip(), why_generated=d.why_generated.strip())
         return shot
 
-    # infographic — must carry real, non-empty props or it doesn't ship
-    try:
-        props = json.loads(d.props_json) if d.props_json.strip() else {}
-    except json.JSONDecodeError:
-        props = {}
-    if d.composition.strip() not in COMPOSITIONS or not props:
-        log.warning("shotlist: dropping infographic at %.1fs with no usable data", source_time)
+    if d.kind == "vector_scene":
+        # Composed from the SVG library; the scene lives in `concept`. Props
+        # (element hints) are optional here — the render stage owns placement.
+        if not d.concept.strip():
+            return None
+        shot["concept"] = d.concept.strip()
+        props = _parse_props(d.props_json)
+        if props:
+            shot["props"] = props
+        return shot
+
+    # A rendered content composition (text / data / space). It must carry real,
+    # non-empty props or it doesn't ship — this is where the data rule bites for
+    # `chart`: a chart the LLM couldn't fill with spoken numbers is dropped, not
+    # placeheld.
+    props = _parse_props(d.props_json)
+    if not props:
+        log.warning("shotlist: dropping %s at %.1fs with no usable content", d.kind, source_time)
         return None
-    shot.update(composition=d.composition.strip(), props=props)
+    shot["props"] = props
     return shot
 
 
@@ -234,7 +330,7 @@ def _coherence(client, shots: list[dict]) -> list[dict]:
     lines = []
     for i, s in enumerate(shots):
         s["_tid"] = f"t{i}"
-        desc = s.get("subject") or f'{s.get("composition")}: {list(s.get("props", {}))}'
+        desc = s.get("concept") or ", ".join(str(k) for k in list(s.get("props", {}))[:4])
         lines.append(f'{s["_tid"]} @ {s["source_time"]:.0f}s [{s["kind"]}] {desc}')
     user = ("Full shot list, in playback order. Return keep/drop for each id.\n\n"
             + "\n".join(lines))
@@ -250,6 +346,21 @@ def _coherence(client, shots: list[dict]) -> list[dict]:
 def _order_keys(shot: dict) -> dict:
     head = {k: shot[k] for k in ("id", "kind", "source_time", "duration")}
     return {**head, **{k: v for k, v in shot.items() if k not in head}}
+
+
+def distribution(shots: list[dict]) -> dict:
+    """Per-type counts plus the structured / vector_scene / generated_image
+    buckets used for the 70/20/10 health check (spec section 2)."""
+    by_type: dict[str, int] = {}
+    for s in shots:
+        by_type[s["kind"]] = by_type.get(s["kind"], 0) + 1
+    buckets = {"structured": 0, "vector_scene": 0, "generated_image": 0}
+    for kind, n in by_type.items():
+        if kind in STRUCTURED:
+            buckets["structured"] += n
+        elif kind in buckets:
+            buckets[kind] += n
+    return {"total": len(shots), "by_type": by_type, "buckets": buckets}
 
 
 def author(client, words_doc: dict, episode_id: str, style: str) -> dict:
@@ -330,9 +441,17 @@ def run(ep: Episode, *, force: bool = False) -> dict:
     result = author(_client(), words_doc, ep.episode_id, style)
     ep.shotlist_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
-    kinds: dict[str, int] = {}
-    for s in result["shots"]:
-        kinds[s["kind"]] = kinds.get(s["kind"], 0) + 1
-    log.info("shotlist: %d shots (%s) -> %s", len(result["shots"]), kinds, ep.shotlist_json)
+    dist = distribution(result["shots"])
+    total = dist["total"] or 1
+    b = dist["buckets"]
+    log.info("shotlist: %d shots by type: %s", dist["total"], dist["by_type"])
+    log.info("shotlist: structured %d (%.0f%%) / vector_scene %d (%.0f%%) / generated_image %d (%.0f%%)"
+             " [target ~70/20/10] -> %s",
+             b["structured"], 100 * b["structured"] / total,
+             b["vector_scene"], 100 * b["vector_scene"] / total,
+             b["generated_image"], 100 * b["generated_image"] / total, ep.shotlist_json)
+    if b["generated_image"] > 0.20 * total:
+        log.warning("shotlist: generated_image is %.0f%% (>20%%) — taxonomy guidance needs tightening",
+                    100 * b["generated_image"] / total)
     cache.mark_done(stage_dir, input_hash, extra={"stage": "shotlist", "model": MODEL})
     return result

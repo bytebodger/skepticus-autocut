@@ -1,8 +1,9 @@
-"""Shot list authoring (visuals spec section 5).
+"""Shot list authoring (visuals spec sections 2, 5, 12).
 
 The editorial decision is the LLM's; these tests cover the deterministic scaffold
-around it — segmentation, the data rule (no infographic without real props),
-assembly, and the coherence drop — with the LLM call mocked.
+around it — segmentation, the composition taxonomy assembly, the data rule (no
+chart without spoken numbers), the generated_image justification requirement, the
+distribution buckets, and the coherence drop — with the LLM call mocked.
 """
 
 import json
@@ -19,6 +20,11 @@ def _line(text, t0, wdur=0.3, gap=0.05):
     return out
 
 
+def _decision(index=0, kind="none", props_json="{}", concept="", why_generated="", confidence=0.8):
+    return Decision(index=index, kind=kind, props_json=props_json, concept=concept,
+                    why_generated=why_generated, confidence=confidence)
+
+
 # --- segmenter ------------------------------------------------------------- #
 
 def test_segmenter_splits_on_pause_and_punctuation():
@@ -30,51 +36,88 @@ def test_segmenter_splits_on_pause_and_punctuation():
 
 def test_passages_group_toward_target_spacing():
     words = _line("word", 0.0)
-    # stretch a passage past TARGET_SPACING by placing a far-apart sentence
     words += _line("later words here now again.", shotlist.TARGET_SPACING + 1)
     passages = shotlist._passages(shotlist._sentences(words))
     assert len(passages) >= 1
     assert passages[0]["start"] == 0.0
 
 
-# --- the data rule (never ship an infographic without real props) ---------- #
+# --- the taxonomy: content compositions carry props ------------------------ #
 
 def _passage(t0=10.0, t1=25.0, text="a passage"):
     return {"start": t0, "end": t1, "text": text}
 
 
-def test_illustration_shot_carries_subject_and_concept():
-    d = Decision(index=0, kind="illustration", subject="the Council of Nicaea",
-                 concept="robed figures in a Roman hall", variant="engraving",
-                 composition="", props_json="{}", confidence=0.8)
+def test_content_composition_carries_props():
+    d = _decision(kind="pull_quote",
+                  props_json='{"quote": "The virgin shall conceive", "attribution": "Isaiah 7:14"}')
     s = shotlist._to_shot(d, _passage())
-    assert s["kind"] == "illustration"
-    assert s["subject"] == "the Council of Nicaea" and s["concept"]
-    assert s["variant"] == "engraving"
-    assert "data_status" not in s and s["source_time"] == 10.0
+    assert s["kind"] == "pull_quote"
+    assert s["props"]["attribution"] == "Isaiah 7:14"
+    assert s["source_time"] == 10.0 and "data_status" not in s
 
 
-def test_infographic_with_real_props_ships():
-    d = Decision(index=0, kind="infographic", subject="", concept="", variant="",
-                 composition="line_chart",
-                 props_json='{"values": ["15.7 million", "12.9 million"]}', confidence=0.9)
+def test_chart_with_real_spoken_numbers_ships():
+    d = _decision(kind="chart",
+                  props_json='{"chart_type": "bar", "series": [{"label": "KJV", "value": "15.7 million"}]}')
     s = shotlist._to_shot(d, _passage())
-    assert s["kind"] == "infographic" and s["composition"] == "line_chart"
-    assert s["props"]["values"] == ["15.7 million", "12.9 million"]
-    assert "data_status" not in s
+    assert s["kind"] == "chart" and s["props"]["series"][0]["value"] == "15.7 million"
 
 
-def test_infographic_without_props_is_dropped():
-    # A chart the LLM couldn't fill (no spoken data) must not ship a stub.
-    d = Decision(index=0, kind="infographic", subject="", concept="", variant="",
-                 composition="line_chart", props_json="{}", confidence=0.6)
+def test_chart_without_data_is_dropped():
+    # A chart the LLM couldn't fill with spoken numbers must not ship a stub.
+    assert shotlist._to_shot(_decision(kind="chart", props_json="{}"), _passage()) is None
+
+
+def test_content_composition_without_props_is_dropped():
+    assert shotlist._to_shot(_decision(kind="term_card", props_json="{}"), _passage()) is None
+
+
+# --- vector_scene uses concept, not props ---------------------------------- #
+
+def test_vector_scene_carries_concept():
+    d = _decision(kind="vector_scene", concept="robed figures seated on a hillside at dawn")
+    s = shotlist._to_shot(d, _passage())
+    assert s["kind"] == "vector_scene" and s["concept"].startswith("robed figures")
+    assert "why_generated" not in s
+
+
+def test_vector_scene_without_concept_is_dropped():
+    assert shotlist._to_shot(_decision(kind="vector_scene", concept=""), _passage()) is None
+
+
+# --- generated_image must justify itself ----------------------------------- #
+
+def test_generated_image_with_justification_ships():
+    d = _decision(kind="generated_image",
+                  concept="a crowded first-century Alexandrian library interior",
+                  why_generated="dense architectural detail the flat component library can't compose")
+    s = shotlist._to_shot(d, _passage())
+    assert s["kind"] == "generated_image"
+    assert s["concept"] and s["why_generated"]
+
+
+def test_generated_image_without_why_is_dropped():
+    # No justification -> almost certainly a misclassified vector_scene.
+    d = _decision(kind="generated_image", concept="a temple", why_generated="")
     assert shotlist._to_shot(d, _passage()) is None
 
 
 def test_none_emits_no_shot():
-    d = Decision(index=0, kind="none", subject="", concept="", variant="",
-                 composition="", props_json="{}", confidence=0.9)
-    assert shotlist._to_shot(d, _passage()) is None
+    assert shotlist._to_shot(_decision(kind="none"), _passage()) is None
+
+
+# --- distribution buckets (the 70/20/10 health check) ---------------------- #
+
+def test_distribution_buckets_structured_vector_generated():
+    shots = [
+        {"kind": "pull_quote"}, {"kind": "chart"}, {"kind": "map"},        # structured
+        {"kind": "vector_scene"},                                          # vector
+        {"kind": "generated_image"},                                       # generated
+    ]
+    dist = shotlist.distribution(shots)
+    assert dist["total"] == 5
+    assert dist["buckets"] == {"structured": 3, "vector_scene": 1, "generated_image": 1}
 
 
 # --- author() end to end with the LLM mocked ------------------------------- #
@@ -84,20 +127,17 @@ def test_author_assembles_drops_and_reindexes(monkeypatch):
     monkeypatch.setattr(shotlist, "_passages", lambda sents: passages)
 
     decisions = [
-        Decision(index=0, kind="illustration", subject="a temple", concept="a stone temple",
-                 variant="", composition="", props_json="{}", confidence=0.7),
-        Decision(index=1, kind="infographic", subject="", concept="", variant="",
-                 composition="bar_chart", props_json='{"a": 1}', confidence=0.8),
-        Decision(index=2, kind="none", subject="", concept="", variant="",
-                 composition="", props_json="{}", confidence=0.9),  # -> no shot
+        _decision(index=0, kind="pull_quote", props_json='{"quote": "q", "attribution": "a"}'),
+        _decision(index=1, kind="vector_scene", concept="a stone temple at dusk"),
+        _decision(index=2, kind="none"),  # -> no shot
     ]
 
     def fake_call(client, *, system, user, output_format):
         if output_format is BatchResult:
             return BatchResult(decisions=decisions)
-        # coherence: keep the illustration, drop the infographic
+        # coherence: keep the pull_quote, drop the vector_scene
         return SequenceReview(reviews=[Review(id="t0", action="keep", reason=""),
-                                       Review(id="t1", action="drop", reason="oscillation")])
+                                       Review(id="t1", action="drop", reason="run of scenes")])
 
     monkeypatch.setattr(shotlist, "_call_structured", fake_call)
 
@@ -105,12 +145,17 @@ def test_author_assembles_drops_and_reindexes(monkeypatch):
                              episode_id="context", style="default")
     assert result["episode_id"] == "context" and result["style"] == "default"
     shots = result["shots"]
-    assert [s["kind"] for s in shots] == ["illustration"]   # none dropped, infographic pruned
+    assert [s["kind"] for s in shots] == ["pull_quote"]   # none dropped, scene pruned
     assert shots[0]["id"] == "sh001"
-    assert "_tid" not in shots[0]                            # temp coherence id cleaned up
+    assert "_tid" not in shots[0]                          # temp coherence id cleaned up
     assert list(shots[0])[:4] == ["id", "kind", "source_time", "duration"]
 
 
+def test_taxonomy_covers_twelve_compositions_plus_escape_and_none():
+    assert len(shotlist.COMPOSITIONS) == 12
+    assert shotlist.KINDS[-2:] == ("generated_image", "none")
+    assert "vector_scene" not in shotlist.STRUCTURED
+
+
 def test_prompt_version_and_model_are_in_the_cache_key():
-    # Guards that re-authoring keys on prompt/model, not just the transcript.
     assert shotlist.PROMPT_VERSION and shotlist.MODEL
