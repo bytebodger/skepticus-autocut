@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "diagram props",
+  "type": "object",
+  "properties": {
+    "nodes": { "type": "array", "description": "Nodes in flow order; revealed in sequence.", "minItems": 1, "items": { "type": "string" } },
+    "edges": {
+      "type": "array", "description": "Directed relationships as [from, to] pairs.",
+      "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 }
+    }
+  },
+  "required": ["nodes"],
+  "additionalProperties": false
+}

@@ -78,9 +78,11 @@
       qEl.innerHTML = lines.map(function (g) { return '<span class="line">' + g.join(' ') + '</span>'; }).join(' ');
       var lineEls = qEl.querySelectorAll('.line');
 
-      // Lines reveal across the first ~45% of the shot; attribution lands last.
+      // Lines reveal, attribution last. The reveal window is capped so a long
+      // shot (the card holds until the next) still reveals at a readable pace and
+      // then holds the frame, rather than crawling the reveal across the whole shot.
       var fade = Math.min(0.6, D * 0.12);
-      var introStart = D * 0.05, introSpan = D * 0.42;
+      var introStart = Math.min(D * 0.05, 0.5), introSpan = Math.min(D * 0.42, 6.5);
       var n = lineEls.length;
       Array.prototype.forEach.call(lineEls, function (el, i) {
         var delay = introStart + (n > 1 ? introSpan * i / n : 0);

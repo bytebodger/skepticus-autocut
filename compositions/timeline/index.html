@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .track { position: relative; padding-left: var(--space-5); }
+  .spine { position: absolute; left: 26px; top: 8px; bottom: 8px; width: 5px;
+           background: rgba(240,240,244,.18); transform: scaleY(0); transform-origin: top; }
+  .events { display: flex; flex-direction: column; gap: var(--space-4); }
+  .event { position: relative; opacity: 0; }
+  .dot { position: absolute; left: calc(-1 * var(--space-5) + 12px); top: 10px;
+         width: 34px; height: 34px; border-radius: 50%; background: var(--accent);
+         box-shadow: 0 0 0 8px var(--panel); }
+  .date { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-body);
+          color: var(--accent); }
+  .lbl { font-size: var(--fs-lead); font-weight: var(--fw-regular); line-height: var(--lh-tight);
+         color: var(--paper); margin-top: var(--space-1); }
+  @keyframes rise { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+  @keyframes drawspine { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="track">
+      <div class="spine" id="spine"></div>
+      <div class="events" id="events"></div>
+    </div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var events = (P.events && P.events.length) ? P.events
+      : [{ date: "Then", label: "Something happened." }, { date: "Later", label: "Then this." }];
+
+    var ec = document.getElementById('events');
+    ec.innerHTML = events.map(function () {
+      return '<div class="event"><div class="dot"></div><div class="date"></div><div class="lbl"></div></div>';
+    }).join('');
+    var els = ec.querySelectorAll('.event');
+    Array.prototype.forEach.call(els, function (el, i) {
+      el.querySelector('.date').textContent = events[i].date || "";
+      el.querySelector('.lbl').textContent = events[i].label || "";
+    });
+
+    // The spine draws, then the playhead advances — events rise in sequence. Capped.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.7, 8.0), fade = Math.min(0.55, D * 0.11);
+    document.getElementById('spine').style.animation = 'drawspine ' + Math.min(1.0, span * 0.5) + 's ' + EASE + ' ' + start + 's both';
+    var k = els.length;
+    Array.prototype.forEach.call(els, function (el, i) {
+      el.style.animation = 'rise ' + fade + 's ' + EASE + ' ' + (start + span * 0.15 + span * 0.75 * (k > 1 ? i / (k - 1 || 1) : 0)) + 's both';
+    });
+  </script>
+</body>
+</html>

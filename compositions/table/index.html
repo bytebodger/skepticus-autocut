@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .grid { display: grid; width: 100%; }
+  .cell { padding: var(--space-3) var(--space-3); font-size: var(--fs-body); line-height: var(--lh-body);
+          color: var(--paper); border-bottom: 2px solid rgba(240,240,244,.12); }
+  .head { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-small);
+          letter-spacing: 2px; text-transform: uppercase; color: var(--accent);
+          border-bottom: var(--rule) solid var(--accent); opacity: 0; }
+  .col0 { font-weight: var(--fw-bold); color: var(--paper); }
+  .row { display: contents; }
+  .rcell { opacity: 0; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="grid" id="grid"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var cols = (P.columns && P.columns.length) ? P.columns : ["A", "B"];
+    var rows = (P.rows && P.rows.length) ? P.rows : [["1", "2"]];
+
+    var grid = document.getElementById('grid');
+    grid.style.gridTemplateColumns = 'repeat(' + cols.length + ', 1fr)';
+    grid.innerHTML = cols.map(function () { return '<div class="cell head"><span></span></div>'; }).join('')
+      + rows.map(function (r) {
+          return r.map(function (_, ci) { return '<div class="cell rcell' + (ci === 0 ? ' col0' : '') + '"></div>'; }).join('');
+        }).join('');
+    var heads = grid.querySelectorAll('.head');
+    Array.prototype.forEach.call(heads, function (h, i) { h.querySelector('span').textContent = cols[i]; });
+    var rcells = grid.querySelectorAll('.rcell');
+    var flat = [];
+    rows.forEach(function (r) { r.forEach(function (v) { flat.push(v); }); });
+    Array.prototype.forEach.call(rcells, function (c, i) { c.textContent = flat[i] != null ? flat[i] : ""; });
+
+    // Header first, then rows drop in one at a time. Capped reveal.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.65, 7.0), fade = Math.min(0.5, D * 0.1);
+    Array.prototype.forEach.call(heads, function (h) { h.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + start + 's both'; });
+    var nrows = rows.length, ncols = cols.length;
+    Array.prototype.forEach.call(rcells, function (c, i) {
+      var ri = Math.floor(i / ncols);
+      var delay = start + span * 0.2 + span * 0.75 * (nrows > 1 ? ri / (nrows - 1 || 1) : 0);
+      c.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + delay + 's both';
+    });
+  </script>
+</body>
+</html>

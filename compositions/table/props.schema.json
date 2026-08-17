@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "table props",
+  "type": "object",
+  "properties": {
+    "columns": { "type": "array", "description": "Column headers.", "minItems": 1, "items": { "type": "string" } },
+    "rows": {
+      "type": "array", "description": "Rows, revealed one at a time.",
+      "minItems": 1, "items": { "type": "array", "items": { "type": "string" } }
+    }
+  },
+  "required": ["columns", "rows"],
+  "additionalProperties": false
+}

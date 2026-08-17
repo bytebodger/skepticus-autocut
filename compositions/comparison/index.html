@@ -70,9 +70,10 @@
       el.querySelector('.detail').textContent = items[i].detail || "";
     });
 
-    // Sides arrive in turn across the first ~55% of the shot — never together.
+    // Sides arrive in turn — never together. Reveal window is capped so a long
+    // shot reveals at a readable pace and then holds (see pull_quote).
     var fade = Math.min(0.6, D * 0.12);
-    var start = D * 0.06, span = D * 0.50, m = colEls.length;
+    var start = Math.min(D * 0.06, 0.6), span = Math.min(D * 0.50, 5.0), m = colEls.length;
     Array.prototype.forEach.call(colEls, function (el, i) {
       var delay = start + (m > 1 ? span * i / m : 0);
       el.style.animation = 'arrive ' + fade + 's ' + EASE + ' ' + delay + 's both';

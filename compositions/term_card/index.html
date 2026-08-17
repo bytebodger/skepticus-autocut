@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .eyebrow { font-size: var(--fs-eyebrow); font-weight: var(--fw-bold); letter-spacing: 4px;
+             text-transform: uppercase; color: var(--accent); margin-bottom: var(--space-3); opacity: 0; }
+  .term { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-h1);
+          line-height: var(--lh-tight); color: var(--paper); opacity: 0; }
+  .rule { width: 160px; height: var(--rule); background: var(--accent); margin: var(--space-3) 0; opacity: 0; }
+  .def { font-size: var(--fs-lead); font-weight: var(--fw-regular); line-height: var(--lh-body); color: var(--muted); }
+  .def .line { display: block; opacity: 0; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="eyebrow" id="eyebrow">Definition</div>
+    <div class="term" id="term"></div>
+    <div class="rule" id="rule"></div>
+    <div class="def" id="def"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    document.getElementById('term').textContent = P.term || "term";
+    var def = P.definition || "Its meaning, set out plainly.";
+
+    function init() {
+      var defEl = document.getElementById('def');
+      defEl.innerHTML = def.split(/\s+/).map(function (w) { return '<span class="w">' + w + '</span>'; }).join(' ');
+      var top = null, lines = [], cur = null;
+      Array.prototype.forEach.call(defEl.querySelectorAll('.w'), function (s) {
+        if (top === null || s.offsetTop !== top) { top = s.offsetTop; cur = []; lines.push(cur); }
+        cur.push(s.textContent);
+      });
+      defEl.innerHTML = lines.map(function (g) { return '<span class="line">' + g.join(' ') + '</span>'; }).join(' ');
+      var lineEls = defEl.querySelectorAll('.line');
+
+      // term first, then the definition reveals by line. Capped for long holds.
+      var start = Math.min(D * 0.05, 0.5), span = Math.min(D * 0.5, 6.0), fade = Math.min(0.6, D * 0.12);
+      function anim(el, t) { el.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + t + 's both'; }
+      anim(document.getElementById('eyebrow'), start);
+      anim(document.getElementById('term'), start + span * 0.12);
+      anim(document.getElementById('rule'), start + span * 0.24);
+      var n = lineEls.length;
+      Array.prototype.forEach.call(lineEls, function (el, i) {
+        anim(el, start + span * 0.38 + span * 0.5 * (n > 1 ? i / n : 0));
+      });
+    }
+    function ready() { (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve())
+      .then(function () { requestAnimationFrame(init); }); }
+    if (document.readyState === 'complete') ready(); else window.addEventListener('load', ready);
+  </script>
+</body>
+</html>

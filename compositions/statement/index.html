@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Phase-3 content-window card (2400x1680); see pull_quote for the marker's role. -->
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel);
+    border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+  }
+  /* The host's own words, set large for emphasis. No quotation marks, no byline —
+     an accent rule stands in for the flourish a pull_quote gets. */
+  .accent { width: 160px; height: var(--rule); background: var(--accent);
+            margin-bottom: var(--space-4); }
+  .statement {
+    font-family: var(--font-display); font-weight: var(--fw-black);
+    font-size: var(--fs-h1); line-height: var(--lh-tight); color: var(--paper);
+  }
+  .line { display: block; opacity: 0; }           /* fades in by visual line */
+  @keyframes fadein { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="accent"></div>
+    <div class="statement" id="statement"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var text = P.text || P.statement || "The point, stated plainly and set large.";
+    var el = document.getElementById('statement');
+
+    function init() {
+      // Group words into visual lines (after layout) so the fade is per rendered
+      // line regardless of wrapping.
+      el.innerHTML = text.split(/\s+/)
+        .map(function (w) { return '<span class="w">' + w + '</span>'; }).join(' ');
+      var top = null, lines = [], cur = null;
+      Array.prototype.forEach.call(el.querySelectorAll('.w'), function (s) {
+        if (top === null || s.offsetTop !== top) { top = s.offsetTop; cur = []; lines.push(cur); }
+        cur.push(s.textContent);
+      });
+      el.innerHTML = lines.map(function (g) { return '<span class="line">' + g.join(' ') + '</span>'; }).join(' ');
+      var lineEls = el.querySelectorAll('.line');
+
+      // Reveal is capped so a long shot (the card holds until the next one) still
+      // reveals at a readable pace and then holds, rather than crawling over 60s.
+      var introStart = Math.min(D * 0.05, 0.5);
+      var introSpan = Math.min(D * 0.5, 6.5);
+      var fade = Math.min(0.6, D * 0.12);
+      var n = lineEls.length;
+      Array.prototype.forEach.call(lineEls, function (le, i) {
+        var delay = introStart + (n > 1 ? introSpan * i / n : 0);
+        le.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + delay + 's both';
+      });
+    }
+    function ready() {
+      var fonts = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+      fonts.then(function () { requestAnimationFrame(init); });
+    }
+    if (document.readyState === 'complete') ready();
+    else window.addEventListener('load', ready);
+  </script>
+</body>
+</html>

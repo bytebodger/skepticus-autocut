@@ -2,33 +2,50 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
 <style>
-  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
-  * { box-sizing: border-box; font-family: "Montserrat", system-ui, sans-serif; }
-  .wrap {
-    position: absolute; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; text-align: center;
-    animation: fade 5s ease-in-out both;
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
   }
-  .title    { font-size: 120px; font-weight: 900; color: #fff; text-shadow: 0 6px 40px rgba(0,0,0,.7); }
-  .subtitle { font-size: 48px; font-weight: 500; color: #ffcf33; margin-top: 16px; letter-spacing: 3px; }
-  @keyframes fade {
-    0% { opacity: 0; transform: scale(1.04); }
-    12% { opacity: 1; transform: scale(1); }
-    88% { opacity: 1; transform: scale(1); }
-    100% { opacity: 0; transform: scale(1.02); }
-  }
+  .kicker { font-size: var(--fs-small); font-weight: var(--fw-bold); letter-spacing: 6px;
+            text-transform: uppercase; color: var(--accent); margin-bottom: var(--space-4); opacity: 0; }
+  .rule { width: 220px; height: var(--rule); background: var(--accent); margin: var(--space-4) auto 0; opacity: 0; }
+  .title { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-h1);
+           line-height: var(--lh-tight); color: var(--paper); opacity: 0; }
+  @keyframes rise { from { opacity: 0; transform: translateY(28px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
 <body>
-  <div class="wrap" data-start="0" data-duration="5">
-    <div class="title" id="title">Skepticus</div>
-    <div class="subtitle" id="subtitle"></div>
+  <div class="card" data-start="0" data-duration="6">
+    <div class="kicker" id="kicker"></div>
+    <div class="title" id="title"></div>
+    <div class="rule" id="rule"></div>
   </div>
   <script>
     var P = (window.PROPS || {});
-    if (P.title) document.getElementById("title").textContent = P.title;
-    if (P.subtitle) document.getElementById("subtitle").textContent = P.subtitle;
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 6;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var title = P.title || "Section title";
+    var sub = P.subtitle || "";
+    document.getElementById('title').textContent = title;
+    var k = document.getElementById('kicker');
+    if (sub) { k.textContent = sub; } else { k.style.display = 'none'; }
+
+    // A section marker: subtitle, then title rises, then the rule draws under it.
+    var start = Math.min(D * 0.06, 0.5), fade = Math.min(0.7, D * 0.14);
+    if (sub) k.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + start + 's both';
+    document.getElementById('title').style.animation = 'rise ' + fade + 's ' + EASE + ' ' + (start + Math.min(D * 0.12, 0.4)) + 's both';
+    document.getElementById('rule').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (start + Math.min(D * 0.3, 1.1)) + 's both';
   </script>
 </body>
 </html>

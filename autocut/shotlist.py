@@ -49,10 +49,16 @@ from .paths import Episode
 log = logging.getLogger("autocut.shotlist")
 
 # Bump when the prompts or schema change, so cached shot lists re-author.
-PROMPT_VERSION = "llm-2"
+PROMPT_VERSION = "llm-5"
 MODEL = os.environ.get("AUTOCUT_SHOTLIST_MODEL", "claude-opus-4-8")
 BATCH_SIZE = 14          # passages per authoring call
 MAX_OUTPUT_TOKENS = 16000
+
+# Structural anti-flood caps (spec section 2). The classifier tends to pour
+# ordinary narration into whichever category has the lowest bar; the prompt sets
+# intent, these enforce it in code.
+STATEMENT_CAP = 0.10     # statement: reserved for genuine thesis/punchline lines
+TYPE_CAP = 0.25          # no single composition type may dominate the episode
 
 # Segmentation: one visual every ~15-25s (spec section 5). Passages target the
 # middle of that band; the LLM decides which actually warrant a visual.
@@ -62,10 +68,10 @@ MIN_SHOT_DUR = 4.0
 MAX_SHOT_DUR = 25.0
 TERMINAL = (".", "?", "!")
 
-# The twelve rendered HyperFrames compositions (spec section 2/3). Order is the
+# The rendered HyperFrames compositions (spec section 2/3). Order is the
 # taxonomy's own grouping: text/argument, data/time, space/structure, pictorial.
 COMPOSITIONS = (
-    "pull_quote", "term_card", "comparison", "bullet_reveal",
+    "pull_quote", "statement", "term_card", "comparison", "bullet_reveal",
     "argument_diagram", "title_card",     # text and argument
     "chart", "timeline", "table",          # data and time
     "map", "diagram",                      # space and structure
@@ -117,7 +123,7 @@ def _passages(sents: list[dict]) -> list[dict]:
 class Decision(BaseModel):
     index: int
     kind: Literal[
-        "pull_quote", "term_card", "comparison", "bullet_reveal",
+        "pull_quote", "statement", "term_card", "comparison", "bullet_reveal",
         "argument_diagram", "title_card", "chart", "timeline", "table",
         "map", "diagram", "vector_scene", "generated_image", "none",
     ]
@@ -155,8 +161,16 @@ Choose exactly one `kind`. Put the composition's content in props_json as a JSON
 object (shapes below are guidance — extract what the passage actually gives you):
 
 TEXT AND ARGUMENT
-- pull_quote      the passage quotes something (scripture, a scholar, an
-                  apologist) accurately. {"quote": "...", "attribution": "..."}
+- pull_quote      the passage quotes an EXTERNAL source accurately — scripture, a
+                  scholar, an apologist, an opponent. NOT the host's own words.
+                  {"quote": "...", "attribution": "..."}
+- statement       RARE. The host's single strongest line in a stretch — a thesis
+                  or a punchline that carries a whole section, set large. NOT
+                  ordinary narration, and NOT most of what the host says (expect
+                  roughly one statement per ten shots). The spoken words are
+                  already burned in as captions, so a statement just repeats them
+                  bigger — only enlarge a line that truly earns it. No quotation
+                  marks, no attribution. {"text": "..."}
 - term_card       a word and its definition (Hebrew/Greek terms, technical
                   vocabulary). {"term": "...", "definition": "..."}
 - comparison      two or three things side by side (almah vs betulah, competing
@@ -198,24 +212,53 @@ PICTORIAL
                   not a generated_image — use vector_scene.
 
 NONE
-- none            abstract argument with no concrete visual and no data. Long
-                  stretches of pure argument are normal; prefer fewer visuals and
-                  longer holds over forcing something on-screen.
+- none            no card for this passage — a legitimate, common outcome when
+                  nothing above fits. Ordinary narration that doesn't fit a
+                  structured type is `none`, NOT a statement. `none` is not a gap:
+                  with contiguous durations and the compositor's alpha hold, the
+                  previous card stays on screen, so the panel is never empty.
+                  Choosing `none` costs nothing — but don't over-use it either:
+                  a passage that clearly supports a structured type above should
+                  get that card. Never reach for `statement` just to put text on
+                  screen (the captions already show the words).
+
+PREFER THE MOST SPECIFIC TYPE. comparison and bullet_reveal are GENERAL
+fallbacks — do not let them swallow a passage that fits a more specific type:
+  - a sequence of DATED events is a `timeline`, not a bullet list;
+  - several rows sharing columns is a `table`, not a `comparison`;
+  - premises leading to a conclusion is an `argument_diagram`, not a `comparison`;
+  - a word and its meaning is a `term_card`, not a `comparison`;
+  - a relationship / hierarchy / flow between things is a `diagram`.
 
 SELECTION PRIORITY — walk this in order and take the FIRST that fits:
-  1  quotes something                 -> pull_quote
-  2  defines a term                   -> term_card
-  3  contrasts two or three things    -> comparison
-  4  enumerates points                -> bullet_reveal
-  5  structured argument (premises->conclusion) -> argument_diagram
-  6  states numbers ALOUD             -> chart
-  7  walks through time               -> timeline
-  8  is about a place                 -> map
-  9  a scene the SVG library can compose -> vector_scene
- 10  a scene it CANNOT compose        -> generated_image
- 11  none of the above                -> none
-Also reach for title_card (a section marker), table (a multi-row comparison), or
-diagram (an explicit structure/hierarchy) when they clearly fit.
+  1  quotes an EXTERNAL source                    -> pull_quote
+  2  defines a term (a word and its meaning)       -> term_card
+  3  premises leading to a conclusion, or a dilemma -> argument_diagram
+  4  numbers spoken ALOUD to compare               -> chart
+  5  a chronology of DATED events                  -> timeline
+  6  several rows across shared columns            -> table
+  7  a relationship / hierarchy / flow             -> diagram
+  8  a place or geography                          -> map
+  9  a section marker / heading                    -> title_card
+ 10  two or three things contrasted side by side (nothing more specific fits) -> comparison
+ 11  a short enumerated list of points             -> bullet_reveal
+ 12  the host's ONE strongest thesis/punchline in a stretch (rare) -> statement
+ 13  a scene the SVG library can compose           -> vector_scene
+ 14  a scene it CANNOT compose                     -> generated_image
+ 15  none of the above                             -> none
+
+Reach for the most specific type a passage genuinely supports — the episode has
+terms, chronologies, arguments, and comparisons that each want their own card.
+Choose `none` only when nothing above fits; it is a legitimate, common outcome
+(the previous card holds, the panel is never empty), but do NOT force everything
+to `none` — a passage that clearly supports a structured type should get one.
+
+ATTRIBUTION RULE — NEVER attribute the host's own words to the host. The host
+(Skepticus) is the speaker; the transcript is almost entirely the host talking.
+When the passage is the host speaking, it is NEVER a pull_quote — use `statement`
+(no attribution) for an emphatic own-words line, or a structured type, or "none".
+pull_quote is reserved for words the host is quoting from someone else, attributed
+to that source. A "- Skepticus" byline on the host's own sentence is wrong.
 
 DATA RULE — only numbers SPOKEN ALOUD in the passage may be charted, extracted
 verbatim with their labels. Scripture citations (Psalm 23, John 3:16, Genesis 1),
@@ -237,6 +280,9 @@ shots that hurt the flow. Watch especially for:
   term_card, bullet_reveal, argument_diagram, title_card ...) read as a lecture
   slide deck. Break up a long run of one type by dropping its weakest members so
   the sequence varies; a map, chart, or vector_scene between them restores rhythm.
+- STATEMENTS especially: `statement` is rare — never two in a row, and only a
+  genuine thesis/punchline earns one. Drop statements that are ordinary narration
+  (they become `none`; the previous card holds, the panel is never empty).
 - two near-identical subjects, or the same composition back-to-back.
 - rapid oscillation between types every few seconds.
 - density that is too high (aim for roughly one visual every 15-25 seconds).
@@ -343,6 +389,69 @@ def _coherence(client, shots: list[dict]) -> list[dict]:
     return kept
 
 
+def _rebalance(shots: list[dict]) -> list[dict]:
+    """Structural anti-flood (spec section 2). Prompt intent isn't enough — the
+    classifier pours narration into whichever type has the lowest bar (illustration
+    at 57/60, then statement at 51/88). Enforce it in code: cap `statement` near
+    STATEMENT_CAP and keep only the strongest, never two statements in a row, and
+    cap any single type near TYPE_CAP. A dropped shot becomes `none`, so the
+    previous card holds and the panel stays covered — dropping costs nothing."""
+    ordered = sorted(shots, key=lambda s: s["source_time"])
+
+    def conf(i: int) -> float:
+        return float(ordered[i].get("confidence", 0.0))
+
+    dropped: set[int] = set()
+
+    # statement: keep the strongest ~STATEMENT_CAP of the FINAL shot count.
+    stmts = [i for i, s in enumerate(ordered) if s["kind"] == "statement"]
+    n_other = len(ordered) - len(stmts)
+    keep_n = max(1, round(n_other * STATEMENT_CAP / (1 - STATEMENT_CAP))) if stmts else 0
+    for rank, i in enumerate(sorted(stmts, key=lambda i: -conf(i))):
+        if rank >= keep_n:
+            dropped.add(i)
+
+    # never two statements in a row (over the survivors) — drop the later one.
+    prev_stmt = False
+    for i, s in enumerate(ordered):
+        if i in dropped:
+            continue
+        if s["kind"] == "statement":
+            if prev_stmt:
+                dropped.add(i)
+                continue
+            prev_stmt = True
+        else:
+            prev_stmt = False
+
+    # no single type over ~TYPE_CAP of the survivors — drop the weakest of it.
+    survivors = [i for i in range(len(ordered)) if i not in dropped]
+    limit = max(1, int(TYPE_CAP * len(survivors)))
+    by_type: dict[str, list[int]] = {}
+    for i in survivors:
+        by_type.setdefault(ordered[i]["kind"], []).append(i)
+    for kind, idxs in by_type.items():
+        if len(idxs) > limit:
+            for i in sorted(idxs, key=conf)[: len(idxs) - limit]:
+                dropped.add(i)
+
+    kept = [s for i, s in enumerate(ordered) if i not in dropped]
+    log.info("shotlist: rebalance kept %d of %d (statement cap %d)", len(kept), len(ordered), keep_n)
+    return kept
+
+
+def _make_contiguous(shots: list[dict]) -> None:
+    """Extend each shot's duration to the next shot's start so the content window
+    is covered continuously by construction (spec: it must never go empty next to
+    a talking head). Runs on the final, coherence-pruned list, in source order.
+    The last shot keeps its natural duration — the compositor holds it to the end.
+    Compositions cap their reveal, so a long span is a normal reveal then a held
+    frame; the render stage clones that tail cheaply."""
+    ordered = sorted(shots, key=lambda s: s["source_time"])
+    for cur, nxt in zip(ordered, ordered[1:]):
+        cur["duration"] = round(max(MIN_SHOT_DUR, nxt["source_time"] - cur["source_time"]), 3)
+
+
 def _order_keys(shot: dict) -> dict:
     head = {k: shot[k] for k in ("id", "kind", "source_time", "duration")}
     return {**head, **{k: v for k, v in shot.items() if k not in head}}
@@ -384,7 +493,9 @@ def author(client, words_doc: dict, episode_id: str, style: str) -> dict:
         if shot is not None:
             shots.append(shot)
 
-    shots = _coherence(client, shots)
+    shots = _coherence(client, shots)       # LLM flow pass (repetition, pacing)
+    shots = _rebalance(shots)               # deterministic anti-flood caps
+    _make_contiguous(shots)                 # continuous coverage by construction
     for n, shot in enumerate(shots, 1):
         shot["id"] = f"sh{n:03d}"
 

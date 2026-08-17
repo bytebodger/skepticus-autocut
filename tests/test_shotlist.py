@@ -151,10 +151,71 @@ def test_author_assembles_drops_and_reindexes(monkeypatch):
     assert list(shots[0])[:4] == ["id", "kind", "source_time", "duration"]
 
 
-def test_taxonomy_covers_twelve_compositions_plus_escape_and_none():
-    assert len(shotlist.COMPOSITIONS) == 12
+def test_taxonomy_includes_statement_plus_escape_and_none():
+    assert "statement" in shotlist.COMPOSITIONS
+    assert len(shotlist.COMPOSITIONS) == 13
     assert shotlist.KINDS[-2:] == ("generated_image", "none")
     assert "vector_scene" not in shotlist.STRUCTURED
+    assert "statement" in shotlist.STRUCTURED
+
+
+def test_statement_ships_with_text_and_no_attribution():
+    # The host's own words -> statement, never a self-attributed pull_quote.
+    d = _decision(kind="statement", props_json='{"text": "Context is the bug spray of theology."}')
+    s = shotlist._to_shot(d, _passage())
+    assert s["kind"] == "statement"
+    assert s["props"]["text"].startswith("Context")
+    assert "attribution" not in s["props"]
+
+
+def _s(kind, t, conf=0.8):
+    return {"kind": kind, "source_time": float(t), "duration": 6.0, "confidence": conf}
+
+
+def test_rebalance_caps_statement_flood():
+    # 20 statements + 5 other -> statement must fall to ~10% of the final count.
+    shots = [_s("statement", i * 10, conf=0.5 + i * 0.01) for i in range(20)]
+    shots += [_s("comparison", 5 + i * 40) for i in range(5)]
+    kept = shotlist._rebalance(shots)
+    n_stmt = sum(1 for s in kept if s["kind"] == "statement")
+    assert n_stmt <= max(1, round(len(kept) * shotlist.STATEMENT_CAP)) + 1
+    assert n_stmt < 20                                  # the flood is cut
+    # the strongest statements survive (higher source_time had higher conf here)
+    kept_ts = {s["source_time"] for s in kept if s["kind"] == "statement"}
+    assert max(kept_ts) == 190.0
+
+
+def test_rebalance_never_two_statements_in_a_row():
+    # statements interleaved so the cap alone wouldn't separate them
+    shots = [_s("statement", 0, 0.9), _s("statement", 10, 0.9),
+             _s("comparison", 20), _s("statement", 30, 0.9), _s("statement", 40, 0.9)]
+    kept = shotlist._rebalance(shots)
+    kinds = [s["kind"] for s in sorted(kept, key=lambda s: s["source_time"])]
+    assert not any(a == "statement" and b == "statement" for a, b in zip(kinds, kinds[1:]))
+
+
+def test_rebalance_caps_any_type_at_25pct():
+    # 8 comparisons flooding among 24 shots (33%) -> capped toward ~25% of shots.
+    shots = [_s("comparison", i * 10, conf=0.5 + i * 0.01) for i in range(8)]
+    shots += [_s("bullet_reveal", 5 + i * 20) for i in range(16)]
+    n0 = len(shots)
+    kept = shotlist._rebalance(shots)
+    n_comp = sum(1 for s in kept if s["kind"] == "comparison")
+    assert n_comp <= max(1, int(shotlist.TYPE_CAP * n0))    # capped to ~25% of shots
+    assert n_comp < 8                                        # the flood is cut
+    # the weakest comparisons are the ones dropped
+    kept_comp_conf = [s["confidence"] for s in kept if s["kind"] == "comparison"]
+    assert min(kept_comp_conf) >= 0.5 + (8 - n_comp) * 0.01 - 1e-9
+
+
+def test_make_contiguous_extends_each_shot_to_the_next():
+    shots = [
+        {"kind": "statement", "source_time": 10.0, "duration": 6.0},
+        {"kind": "pull_quote", "source_time": 30.0, "duration": 6.0},
+        {"kind": "bullet_reveal", "source_time": 55.0, "duration": 6.0},
+    ]
+    shotlist._make_contiguous(shots)
+    assert [s["duration"] for s in shots] == [20.0, 25.0, 6.0]  # last keeps its own
 
 
 def test_prompt_version_and_model_are_in_the_cache_key():

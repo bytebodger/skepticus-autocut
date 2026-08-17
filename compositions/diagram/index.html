@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .flow { display: flex; flex-direction: column; align-items: center; width: 100%; }
+  .node { max-width: 88%; text-align: center; padding: var(--space-3) var(--space-4);
+          background: rgba(240,240,244,.06); border: 3px solid var(--card-border-color);
+          border-radius: var(--card-radius); font-family: var(--font-display); font-weight: var(--fw-bold);
+          font-size: var(--fs-h2); line-height: var(--lh-tight); color: var(--paper);
+          opacity: 0; transform: translateY(20px) scale(.97); }
+  .conn { width: 5px; height: var(--space-4); background: var(--accent); position: relative;
+          transform: scaleY(0); transform-origin: top; }
+  .conn::after { content: ""; position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%);
+                 border-left: 16px solid transparent; border-right: 16px solid transparent;
+                 border-top: 22px solid var(--accent); }
+  @keyframes pop { from { opacity: 0; transform: translateY(20px) scale(.97); } to { opacity: 1; transform: none; } }
+  @keyframes draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="flow" id="flow"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var nodes = (P.nodes && P.nodes.length) ? P.nodes : ["A", "B", "C"];
+
+    var flow = document.getElementById('flow');
+    var parts = [];
+    nodes.forEach(function (n, i) {
+      if (i > 0) parts.push('<div class="conn"></div>');
+      parts.push('<div class="node"></div>');
+    });
+    flow.innerHTML = parts.join('');
+    var nodeEls = flow.querySelectorAll('.node');
+    Array.prototype.forEach.call(nodeEls, function (el, i) { el.textContent = nodes[i]; });
+    var connEls = flow.querySelectorAll('.conn');
+
+    // Nodes pop in top-to-bottom; the connector draws between each. Capped reveal.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.7, 7.5), fade = Math.min(0.55, D * 0.11);
+    var k = nodeEls.length;
+    Array.prototype.forEach.call(nodeEls, function (el, i) {
+      var t0 = start + span * 0.85 * (k > 1 ? i / k : 0);
+      el.style.animation = 'pop ' + fade + 's ' + EASE + ' ' + t0 + 's both';
+      if (i > 0) connEls[i - 1].style.animation = 'draw ' + Math.min(0.4, fade) + 's ' + EASE + ' ' + (t0 - span * 0.85 / k * 0.4) + 's both';
+    });
+  </script>
+</body>
+</html>

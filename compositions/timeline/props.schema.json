@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "timeline props",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array", "description": "Dated events, revealed in sequence as the playhead advances.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "date": { "type": "string" },
+          "label": { "type": "string" }
+        },
+        "required": ["date", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["events"],
+  "additionalProperties": false
+}

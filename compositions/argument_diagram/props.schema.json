@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "argument_diagram props",
+  "type": "object",
+  "properties": {
+    "premises": {
+      "type": "array", "description": "Premises, revealed in sequence.",
+      "minItems": 1, "items": { "type": "string" }
+    },
+    "conclusion": { "type": "string", "description": "The conclusion that follows, revealed last." }
+  },
+  "required": ["premises", "conclusion"],
+  "additionalProperties": false
+}

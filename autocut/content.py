@@ -99,8 +99,14 @@ def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
     crossfade = tr.get("type", "crossfade") == "crossfade" and float(tr.get("duration", 0.35)) > 0
     fade_d = float(tr.get("duration", 0.35))
 
-    # Window-relative item starts; keep only items that fall inside the window.
-    rel = [(it, out - w0) for it, out in placed if w0 - 1e-6 <= out < w0 + dur]
+    # Window-relative item starts. Include items starting inside the window, plus
+    # the single item active at the window start — it began earlier and, in hold
+    # mode, is still covering the window — so a --range/--preview window is never
+    # empty at t=0 (its w_start is negative; the overlay clips the pre-roll). For a
+    # full render (w0=0) there is no earlier item, so this is a preview-only fix.
+    in_win = [(it, out - w0) for it, out in placed if w0 - 1e-6 <= out < w0 + dur]
+    before = [(it, out - w0) for it, out in placed if out < w0 - 1e-6]
+    rel = ([before[-1]] if before else []) + in_win
     n = len(rel)
 
     inputs: list[str] = []
@@ -121,28 +127,37 @@ def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
                 seglen += fade_d  # persist under the next item's fade-in
         seglen = min(seglen, dur - w_start + (fade_d if crossfade else 0.0))
 
-        if path.suffix.lower() in IMAGE_EXTS:
+        is_image = path.suffix.lower() in IMAGE_EXTS
+        if is_image:
             inputs += ["-loop", "1", "-t", f"{seglen:.3f}", "-i", str(path)]
         else:
             inputs += ["-t", f"{seglen:.3f}", "-i", str(path)]
 
         chain = [_fit_filter(cw, ch, fit, fill), "format=yuva420p"]
+        if gap != "background" and not is_image:
+            # hold: freeze the last frame to fill the span so the content window is
+            # never empty between cards. A looped still already holds; a finite
+            # video (our ProRes cards) needs the clone-pad. trim caps the result to
+            # the span whether the card is shorter (padded) or longer (truncated).
+            chain.append(f"tpad=stop_mode=clone:stop_duration={seglen:.3f}")
+            chain.append(f"trim=duration={seglen:.3f}")
         if crossfade:
             chain.append(f"fade=t=in:st=0:d={fade_d}:alpha=1")
             if gap == "background":  # fade back to wallpaper (no next item covers it)
                 chain.append(f"fade=t=out:st={max(0.0, seglen - fade_d):.3f}:d={fade_d}:alpha=1")
-        chain.append(f"setpts=PTS-STARTPTS+{w_start:.3f}/TB")
+        chain.append(f"setpts=PTS-STARTPTS{w_start:+.3f}/TB")
         item_graph.append(f"[{k}:v]{','.join(chain)}[c{k}]")
         labels.append(f"c{k}")
         k += 1
 
-    if gap == "background":
-        base = (f"color=c=black:s={cw}x{ch}:r={fps}:d={dur:.3f},"
-                f"format=yuva420p,colorchannelmixer=aa=0[base]")
-        uses_alpha = True
-    else:
-        base = f"color=c={fill}:s={cw}x{ch}:r={fps}:d={dur:.3f},format=yuva420p[base]"
-        uses_alpha = False
+    # Transparent base in BOTH modes so the cards' own alpha (ProRes 4444) reaches
+    # the compositor — the show background shows through the cards' transparent
+    # regions. The modes differ only in the gaps: `background` lets the base (and
+    # so the wallpaper) show between cards; `hold` clone-holds the last card up to
+    # the next, so the window is never empty (the fill colour is now unused).
+    base = (f"color=c=black:s={cw}x{ch}:r={fps}:d={dur:.3f},"
+            f"format=yuva420p,colorchannelmixer=aa=0[base]")
+    uses_alpha = True
 
     graph = [base] + item_graph
     cur = "base"

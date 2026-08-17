@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow); overflow: hidden;
+  }
+  .eyebrow { font-size: var(--fs-eyebrow); font-weight: var(--fw-bold); letter-spacing: 4px;
+             text-transform: uppercase; color: var(--accent); opacity: 0; }
+  .region { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-h2);
+            line-height: var(--lh-tight); color: var(--paper); margin-top: var(--space-1); opacity: 0; }
+  .terrain { position: relative; flex: 1; margin-top: var(--space-3); }
+  .terrain svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .land { fill: rgba(240,240,244,.07); stroke: var(--card-border-color); stroke-width: 4; }
+  .contour { fill: none; stroke: rgba(240,240,244,.12); stroke-width: 3; }
+  .pin { position: absolute; transform: translate(-50%, -100%); opacity: 0; }
+  .pin .head { width: 34px; height: 34px; border-radius: 50% 50% 50% 0; background: var(--accent);
+               transform: rotate(-45deg); box-shadow: 0 6px 16px rgba(0,0,0,.5); margin: 0 auto; }
+  .pin .lbl { position: absolute; left: 44px; top: -2px; white-space: nowrap;
+              font-size: var(--fs-small); font-weight: var(--fw-bold); color: var(--paper);
+              text-shadow: 0 2px 8px rgba(0,0,0,.8); }
+  @keyframes fadein { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  @keyframes drop { from { opacity: 0; transform: translate(-50%, -140%); } to { opacity: 1; transform: translate(-50%, -100%); } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="eyebrow">Map</div>
+    <div class="region" id="region"></div>
+    <div class="terrain" id="terrain">
+      <svg viewBox="0 0 1000 620" preserveAspectRatio="none">
+        <path class="land" d="M120,360 C90,250 210,150 340,170 C420,110 560,120 620,190
+              C760,170 880,250 860,360 C900,450 800,540 660,520 C560,580 380,570 300,500
+              C160,510 100,450 120,360 Z"/>
+        <path class="contour" d="M250,330 C360,280 520,300 620,350"/>
+        <path class="contour" d="M320,430 C440,400 600,420 700,390"/>
+      </svg>
+      <div class="pins" id="pins"></div>
+    </div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    document.getElementById('region').textContent = P.region || "A region";
+    var markers = (P.markers && P.markers.length) ? P.markers : ["Here", "There"];
+    // Deterministic spread of pins over the landmass (percentages of the terrain box).
+    var SPOTS = [[34, 46], [56, 36], [47, 64], [68, 54], [30, 68], [62, 72], [44, 30], [74, 40]];
+
+    var pins = document.getElementById('pins');
+    pins.innerHTML = markers.map(function (m, i) {
+      var s = SPOTS[i % SPOTS.length];
+      return '<div class="pin" style="left:' + s[0] + '%;top:' + s[1] + '%">' +
+             '<div class="head"></div><div class="lbl"></div></div>';
+    }).join('');
+    var pinEls = pins.querySelectorAll('.pin');
+    Array.prototype.forEach.call(pinEls, function (el, i) { el.querySelector('.lbl').textContent = markers[i]; });
+
+    // Header, then pins drop onto the map in sequence. Capped reveal.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.65, 7.0), fade = Math.min(0.55, D * 0.11);
+    document.querySelector('.eyebrow').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + start + 's both';
+    document.getElementById('region').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (start + 0.15) + 's both';
+    var k = pinEls.length;
+    Array.prototype.forEach.call(pinEls, function (el, i) {
+      el.style.animation = 'drop ' + fade + 's ' + EASE + ' ' + (start + span * 0.25 + span * 0.7 * (k > 1 ? i / k : 0)) + 's both';
+    });
+  </script>
+</body>
+</html>

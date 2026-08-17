@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .premises { display: flex; flex-direction: column; gap: var(--space-3); }
+  .premise { display: flex; align-items: baseline; gap: var(--space-3);
+             font-size: var(--fs-body); font-weight: var(--fw-regular); line-height: var(--lh-body);
+             color: var(--paper); opacity: 0; }
+  .pnum { flex: none; font-family: var(--font-display); font-weight: var(--fw-black);
+          font-size: var(--fs-h2); color: var(--muted); min-width: 96px; line-height: 1; }
+  .therefore { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-3) 0;
+               font-size: var(--fs-eyebrow); font-weight: var(--fw-bold); letter-spacing: 4px;
+               text-transform: uppercase; color: var(--accent); opacity: 0; }
+  .therefore::before, .therefore::after { content: ""; height: 3px; background: rgba(240,240,244,.18); flex: 1; }
+  .conclusion { font-family: var(--font-display); font-weight: var(--fw-bold); font-size: var(--fs-h2);
+                line-height: var(--lh-tight); color: var(--accent);
+                border-left: var(--rule) solid var(--accent); padding-left: var(--space-3); opacity: 0; }
+  @keyframes stepin { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+  @keyframes fadein { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="premises" id="premises"></div>
+    <div class="therefore" id="therefore">Therefore</div>
+    <div class="conclusion" id="conclusion"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var premises = (P.premises && P.premises.length) ? P.premises : ["First premise.", "Second premise."];
+    var conclusion = P.conclusion || "The conclusion that follows.";
+
+    var pc = document.getElementById('premises');
+    pc.innerHTML = premises.map(function (t, i) {
+      return '<div class="premise"><span class="pnum">' + (i + 1) + '</span><span class="ptx"></span></div>';
+    }).join('');
+    var pel = pc.querySelectorAll('.premise');
+    Array.prototype.forEach.call(pel, function (el, i) { el.querySelector('.ptx').textContent = premises[i]; });
+    document.getElementById('conclusion').textContent = conclusion;
+
+    // Premises step in, then "therefore", then the conclusion. Capped reveal.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.6, 7.0), fade = Math.min(0.55, D * 0.11);
+    var k = pel.length;
+    Array.prototype.forEach.call(pel, function (el, i) {
+      el.style.animation = 'stepin ' + fade + 's ' + EASE + ' ' + (start + span * 0.6 * (k > 1 ? i / k : 0)) + 's both';
+    });
+    document.getElementById('therefore').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (start + span * 0.72) + 's both';
+    document.getElementById('conclusion').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (start + span * 0.84) + 's both';
+  </script>
+</body>
+</html>

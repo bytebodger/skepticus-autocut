@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column;
+    padding: var(--card-pad);
+    background: var(--panel); border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius); box-shadow: var(--card-shadow);
+  }
+  .title { font-family: var(--font-display); font-weight: var(--fw-bold); font-size: var(--fs-h2);
+           line-height: var(--lh-tight); color: var(--paper); margin-bottom: var(--space-4); opacity: 0; }
+  .plot { flex: 1; display: flex; align-items: flex-end; gap: var(--space-4);
+          border-bottom: 4px solid rgba(240,240,244,.22); padding-bottom: 0; }
+  .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+  .val { font-family: var(--font-display); font-weight: var(--fw-black); font-size: var(--fs-body);
+         color: var(--accent); margin-bottom: var(--space-2); opacity: 0; }
+  .col { width: 78%; background: var(--accent); border-radius: 12px 12px 0 0;
+         transform: scaleY(0); transform-origin: bottom; }
+  .bar:nth-child(even) .col { background: var(--cool); }
+  .bar:nth-child(even) .val { color: var(--cool); }
+  .lbl { font-size: var(--fs-small); font-weight: var(--fw-bold); color: var(--paper);
+         margin-top: var(--space-2); text-align: center; opacity: 0; }
+  @keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="title" id="title"></div>
+    <div class="plot" id="plot"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+    var series = (P.series && P.series.length) ? P.series : [{ label: "A", value: "1" }, { label: "B", value: "2" }];
+    var t = document.getElementById('title');
+    if (P.title) { t.textContent = P.title; } else { t.style.display = 'none'; }
+
+    function num(v) { var m = String(v).replace(/,/g, '').match(/-?\d+(\.\d+)?/); return m ? parseFloat(m[0]) : 0; }
+    var max = Math.max.apply(null, series.map(function (s) { return num(s.value); })) || 1;
+
+    var plot = document.getElementById('plot');
+    plot.innerHTML = series.map(function () {
+      return '<div class="bar"><div class="val"></div><div class="col"></div><div class="lbl"></div></div>';
+    }).join('');
+    var bars = plot.querySelectorAll('.bar');
+    Array.prototype.forEach.call(bars, function (bar, i) {
+      bar.querySelector('.val').textContent = series[i].value;
+      bar.querySelector('.lbl').textContent = series[i].label;
+      bar.querySelector('.col').style.height = (12 + 88 * num(series[i].value) / max) + '%';
+    });
+
+    // Title, then bars grow left-to-right with their value + label. Capped reveal.
+    var start = Math.min(D * 0.06, 0.5), span = Math.min(D * 0.55, 6.0), fade = Math.min(0.6, D * 0.12);
+    if (P.title) t.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + start + 's both';
+    var k = bars.length;
+    Array.prototype.forEach.call(bars, function (bar, i) {
+      var d0 = start + span * 0.2 + span * 0.7 * (k > 1 ? i / k : 0);
+      bar.querySelector('.col').style.animation = 'grow ' + Math.min(0.8, span * 0.35) + 's ' + EASE + ' ' + d0 + 's both';
+      bar.querySelector('.val').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (d0 + 0.25) + 's both';
+      bar.querySelector('.lbl').style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (d0 + 0.05) + 's both';
+    });
+  </script>
+</body>
+</html>

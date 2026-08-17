@@ -49,10 +49,13 @@ content:
   rect: [160, 240, 2400, 1680]      # x, y, w, h in canvas space
   fit: contain              # contain (letterbox) | cover (fill + crop)
   background: "#0b0b0d"     # letterbox fill when fit=contain
-  # background keeps the content track transparent, so alpha cards (ProRes 4444)
-  # compose over the show background rather than a flat fill, and the wallpaper
-  # shows between cards. Required for the card alpha to reach the final frame.
-  gap_behavior: background   # hold (last item stays) | background (wallpaper shows)
+  # hold keeps the content window covered continuously: each card holds its final
+  # frame until the next card starts, so the window is never empty next to the
+  # talking head. Both modes keep the track transparent (alpha cards compose over
+  # the background); background instead lets the wallpaper show between cards.
+  # Coverage is continuous by construction (authoring makes shot durations
+  # contiguous); hold is the backstop.
+  gap_behavior: hold        # hold (last item stays) | background (wallpaper shows)
   transition:
     type: crossfade         # crossfade | cut
     duration: 0.35

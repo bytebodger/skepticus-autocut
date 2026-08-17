@@ -63,6 +63,8 @@ log = logging.getLogger("autocut.render")
 DEFAULT_FPS = "24000/1001"
 DEFAULT_WORKERS = 3          # parallel Chrome contexts; capture is the bottleneck
 SETTLE_FRAMES = 2            # extra frames past the animation end before holding
+HOLD_BUFFER = 2.0           # seconds of held frame baked into the .mov; the
+                            # compositor's hold extends the rest of the span
 COMPOSITION_SET = frozenset(COMPOSITIONS)
 # A Phase-3 content-window card declares this marker in its <head>. It separates
 # the real content compositions from the Phase-1 overlay compositions that share
@@ -308,21 +310,29 @@ class _Browser:
 # --------------------------------------------------------------------------- #
 
 def _encode(frames_dir: Path, n_frames: int, fps: str, duration: float,
-            out_mov: Path) -> None:
-    """Hold the last captured frame for the animation's static tail and encode a
-    ProRes 4444 alpha .mov (yuva444p10le) — the alpha-carrying format the speaker
-    layer uses in compose.py. The card keeps its own transparency; nothing is
-    baked in, so it composes over any background."""
+            out_mov: Path) -> float:
+    """Encode the captured reveal plus a short held tail to a ProRes 4444 alpha
+    .mov (yuva444p10le) — the alpha format the speaker layer uses in compose.py.
+
+    The file length is bounded to the reveal plus HOLD_BUFFER, NOT the full (now
+    contiguous, often 60s+) shot duration: ProRes is intra-frame, so a full-length
+    held card would be ~19 MB/s of duplicate frames. The compositor's `hold` gap
+    behaviour clone-extends the card's final frame to fill its span, so on screen
+    the card still runs its full duration — the held tail just isn't baked into a
+    multi-GB intermediate. Returns the encoded length. Nothing is baked in, so the
+    card composes over any background."""
     active_len = n_frames / _fps_float(fps)
-    tail = max(0.0, duration - active_len)
+    mov_len = min(duration, active_len + HOLD_BUFFER)
+    tail = max(0.0, mov_len - active_len)
     graph = f"[0:v]tpad=stop_mode=clone:stop_duration={tail:.3f},format=yuva444p10le[v]"
     ffmpeg.run_ffmpeg([
         "-framerate", fps, "-i", str(frames_dir / "frame_%05d.png"),
         "-filter_complex", graph, "-map", "[v]",
-        "-t", f"{duration:.3f}", "-r", fps,
+        "-t", f"{mov_len:.3f}", "-r", fps,
         "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
         out_mov,
     ])
+    return mov_len
 
 
 # --------------------------------------------------------------------------- #
@@ -375,10 +385,11 @@ async def _render_worker(shots: list[dict], jobs: dict, w: int, h: int, fps: str
                 url = _build_context(tmp, job["comp_dir"], tokens, font,
                                      shot.get("props", {}), float(shot["duration"]))
                 n = await browser.capture_frames(url, fps_f, float(shot["duration"]), frames_dir)
-                _encode(frames_dir, n, fps, float(shot["duration"]), job["out"])
+                mov_len = _encode(frames_dir, n, fps, float(shot["duration"]), job["out"])
                 cache.mark_done(job["stage_dir"], job["key"], extra={"stage": "render", "shot": shot["id"]})
                 results[shot["id"]] = True
-                log.info("render: %s (%s) %d frames -> %s", shot["id"], shot["kind"], n, job["out"].name)
+                log.info("render: %s (%s) %d frames, %.1fs mov (shot %.1fs) -> %s",
+                         shot["id"], shot["kind"], n, mov_len, float(shot["duration"]), job["out"].name)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 

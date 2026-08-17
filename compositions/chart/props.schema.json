@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "chart props",
+  "type": "object",
+  "properties": {
+    "chart_type": { "type": "string", "enum": ["bar", "line", "stacked"], "default": "bar" },
+    "title": { "type": "string", "description": "Optional chart title." },
+    "series": {
+      "type": "array", "description": "Bars, grown in sequence. Values from spoken numbers only.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "value": { "type": "string", "description": "The spoken figure, e.g. \"15.7 million\"." }
+        },
+        "required": ["label", "value"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["series"],
+  "additionalProperties": false
+}

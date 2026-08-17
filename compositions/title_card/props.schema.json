@@ -3,10 +3,8 @@
   "title": "title_card props",
   "type": "object",
   "properties": {
-    "title": { "type": "string" },
-    "subtitle": { "type": "string" },
-    "x": { "type": "number", "default": 0 },
-    "y": { "type": "number", "default": 0 }
+    "title": { "type": "string", "description": "Section title, set large and centered." },
+    "subtitle": { "type": "string", "description": "Optional kicker above the title." }
   },
   "required": ["title"],
   "additionalProperties": false

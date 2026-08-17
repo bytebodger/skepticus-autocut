@@ -65,11 +65,11 @@
       li.querySelector('.txt').textContent = bullets[i];
     });
 
-    // Bullets appear in sequence spread across most of the shot, so a point can
-    // land as it's spoken. The stagger scales with duration: five over 20s pace
-    // differently than five over 8s (spec section 3).
+    // Bullets appear in sequence so a point can land as it's spoken. The stagger
+    // scales with duration (five over 20s vs five over 8s) but is capped so a long
+    // shot reveals at a readable pace and then holds (see pull_quote).
     var fade = Math.min(0.5, D * 0.10);
-    var start = D * 0.06, span = D * 0.74, k = lis.length;
+    var start = Math.min(D * 0.06, 0.6), span = Math.min(D * 0.74, 9.0), k = lis.length;
     if (heading) eb.style.animation = 'pop ' + fade + 's ' + EASE + ' 0s both';
     Array.prototype.forEach.call(lis, function (li, i) {
       var delay = start + (k > 1 ? span * i / (k - 1) : 0);

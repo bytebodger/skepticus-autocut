@@ -61,29 +61,32 @@ def test_no_content_json_is_none(tmp_path):
 
 # --- graph construction ---
 
-def test_graph_hold_opaque_base_and_placement(tmp_path):
-    ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mp4"}], _SEGS)
-    placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mp4", "duration": 6}, 15.0)]
+def test_graph_hold_is_alpha_aware_and_holds_last_frame(tmp_path):
+    ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mov"}], _SEGS)
+    placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mov", "duration": 6}, 15.0)]
     inputs, graph, alpha = content.build_graph(ep, _layout("hold"), "24", (0.0, 40.0), placed, ep.content_dir)
-    assert alpha is False
-    assert "color=c=0x0b0b0d" in graph                         # hold base = letterbox fill
+    assert alpha is True                                        # transparent base -> card alpha survives
+    assert "colorchannelmixer=aa=0" in graph                   # transparent base, not a flat fill
+    assert "tpad=stop_mode=clone" in graph                     # the video card holds its last frame
     assert "setpts=PTS-STARTPTS+5.000/TB" in graph             # item placed at out time
     assert "setpts=PTS-STARTPTS+15.000/TB" in graph
     assert "fade=t=in:st=0:d=0.35:alpha=1" in graph            # crossfade in
     assert graph.rstrip().endswith("[ctrack]")
-    assert "-loop" in inputs                                    # image looped
+    assert "-loop" in inputs                                    # still image looped
     assert inputs.count("-i") == 2                              # one input per item
 
 
-def test_graph_window_offsets_and_filters_items(tmp_path):
-    # A window starting at 10s makes item output-times relative and drops items
-    # outside it. Item at out 5.0 is excluded; item at 15.0 -> rel 5.0.
-    ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mp4"}], _SEGS)
-    placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mp4", "duration": 6}, 15.0)]
+def test_graph_window_includes_item_active_at_start(tmp_path):
+    # A window starting at 10s makes item output-times relative. Item at out 15
+    # -> rel 5. Item at out 5 started before the window but holds into it, so it is
+    # included with a negative (pre-roll) start rather than dropped — the window is
+    # never empty at t=0.
+    ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mov"}], _SEGS)
+    placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mov", "duration": 6}, 15.0)]
     inputs, graph, _ = content.build_graph(ep, _layout("hold"), "24", (10.0, 30.0), placed, ep.content_dir)
-    assert "setpts=PTS-STARTPTS+5.000/TB" in graph   # 15.0 - 10.0
-    assert "setpts=PTS-STARTPTS+0.000/TB" not in graph
-    assert inputs.count("-i") == 1                    # only the in-window item
+    assert "setpts=PTS-STARTPTS+5.000/TB" in graph    # 15.0 - 10.0
+    assert "setpts=PTS-STARTPTS-5.000/TB" in graph    # 5.0 - 10.0, holds into the window
+    assert inputs.count("-i") == 2
 
 
 def test_graph_background_transparent_base_and_fade_out(tmp_path):
