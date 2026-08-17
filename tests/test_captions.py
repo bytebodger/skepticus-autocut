@@ -112,3 +112,49 @@ def test_template_header_preserved():
     ass = captions.build_ass(words, e, TEMPLATE)
     assert "[V4+ Styles]" in ass
     assert ass.count("[Events]") == 1
+
+
+def _k_values(dialogue_line: str) -> list[int]:
+    import re
+    return [int(x) for x in re.findall(r"\\k(\d+)", dialogue_line)]
+
+
+def test_karaoke_does_not_drift_over_a_long_line():
+    # 16 words with irregular sub-second timings that each round off. Independent
+    # per-word rounding would let the error compound; the cumulative-difference
+    # method must land the sweep exactly on the line end.
+    triples, t = [], 0.0
+    for i in range(16):
+        dur = 0.233 + (i % 3) * 0.017  # non-round durations, no gaps (one chunk)
+        triples.append((round(t, 3), round(t + dur, 3), f"w{i}"))
+        t += dur
+    words = _words(*triples)
+    e = _edl([{"id": "s001", "in": 0.0, "out": 30.0, "action": "keep"}])
+    ass = captions.build_ass(words, e, TEMPLATE)
+    dialogue = [l for l in ass.splitlines() if l.startswith("Dialogue:")]
+    assert len(dialogue) == 1  # single line so the whole sweep is one accumulation
+    ks = _k_values(dialogue[0])
+    assert len(ks) == 16
+    # The sweep total must equal the line length in centiseconds, exactly.
+    line_cs = round((triples[-1][1] - triples[0][0]) * 100)
+    assert sum(ks) == line_cs
+
+
+# --- compositor 4K style header, driven by layout config ---
+
+def test_ass_color_rgb_and_literal():
+    assert captions._ass_color("#FFFFFF") == "&H00FFFFFF"       # white
+    assert captions._ass_color("#40FF40") == "&H0040FF40"       # RGB -> BBGGRR green
+    assert captions._ass_color("&H40FF40") == "&H0040FF40"      # literal ASS, alpha added
+
+
+def test_style_header_from_config():
+    cfg = {
+        "font": "Arial", "font_size": 100, "margin_bottom": 90,
+        "word_highlight": {"base_color": "#FFFFFF", "highlight_color": "#40FF40"},
+    }
+    h = captions.style_header_from_config(cfg, 3840, 2160)
+    assert "PlayResX: 3840" in h and "PlayResY: 2160" in h
+    # Primary (current word) = highlight green; Secondary (base) = white.
+    assert "Skepticus,Arial,100,&H0040FF40,&H00FFFFFF," in h
+    assert h.rstrip().endswith("Effect, Text")   # ends ready for Dialogue lines

@@ -47,6 +47,53 @@ def _escape(text: str) -> str:
     return text.replace("{", "(").replace("}", ")")
 
 
+def _ass_color(value: str) -> str:
+    """Normalise a config colour to ASS ``&HAABBGGRR`` (opaque). Accepts an RGB
+    ``#RRGGBB`` (converted — ASS is BBGGRR, not RGB) or a literal ``&H...``."""
+    v = str(value).strip()
+    if v.upper().startswith("&H"):
+        h = v[2:]
+        return "&H" + (("00" + h) if len(h) == 6 else h).upper()
+    h = v.lstrip("#")
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H00{b}{g}{r}".upper()
+
+
+def style_header_from_config(cfg: dict, play_w: int, play_h: int) -> str:
+    """Build the ASS header + style block from the layout ``captions`` config,
+    sized for the given canvas (4K). build_ass appends the Dialogue lines.
+
+    Karaoke colours: the current/spoken word is PrimaryColour (highlight), the
+    not-yet-spoken text is SecondaryColour (base) — per spec section 6.
+    """
+    wh = cfg.get("word_highlight") or {}
+    primary = _ass_color(wh.get("highlight_color", "#40FF40"))   # bright green
+    secondary = _ass_color(wh.get("base_color", "#FFFFFF"))       # white
+    outline_c = _ass_color(cfg.get("outline_color", "#000000"))
+    font = cfg.get("font", "Arial")
+    size = int(cfg.get("font_size", 100))
+    outline = cfg.get("outline", 4)
+    shadow = cfg.get("shadow", 3)
+    margin_v = int(cfg.get("margin_bottom", 100))
+    return (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_w}\n"
+        f"PlayResY: {play_h}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: {STYLE_NAME},{font},{size},{primary},{secondary},{outline_c},"
+        f"&H64000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,120,120,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+
 def _map_words(words: list[dict], spans: list[edl.Span]) -> list[dict]:
     """Return words with output-time start/end, dropping any that were cut."""
     out = []
@@ -89,14 +136,20 @@ def _chunk(words: list[dict]) -> list[list[dict]]:
 def _dialogue_line(chunk: list[dict]) -> str:
     start = chunk[0]["start"]
     end = chunk[-1]["end"]
-    parts = []
+    # \k durations are centiseconds and accumulate across the line. Rounding each
+    # word's duration independently lets the error compound, and the highlight
+    # slides off the audio by the end of a long line. Instead compute each word's
+    # cumulative position (rounded once from the absolute time) and take
+    # differences, so the sweep lands exactly on the line end.
+    bounds = []
     for i, w in enumerate(chunk):
-        if i + 1 < len(chunk):
-            # Absorb the gap to the next word so the karaoke sweep tracks timing.
-            k = round((chunk[i + 1]["start"] - w["start"]) * 100)
-        else:
-            k = round((w["end"] - w["start"]) * 100)
-        k = max(1, k)  # \k must be positive
+        edge = chunk[i + 1]["start"] if i + 1 < len(chunk) else w["end"]
+        bounds.append(round((edge - start) * 100))
+    parts = []
+    prev = 0
+    for i, w in enumerate(chunk):
+        k = max(1, bounds[i] - prev)  # \k must be positive
+        prev = bounds[i]              # track the true boundary, not the clamped sum
         parts.append(f"{{\\k{k}}}{_escape(w['word'])}")
     text = " ".join(parts)
     return f"Dialogue: 0,{_fmt_time(start)},{_fmt_time(end)},{STYLE_NAME},,0,0,0,,{text}"

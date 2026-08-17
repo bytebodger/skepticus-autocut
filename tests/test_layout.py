@@ -120,28 +120,34 @@ def test_speaker_graph_keyed_when_enabled(tmp_path):
 
 def test_composite_graph_overlays_at_rect_origins(tmp_path):
     lay = layout_mod.load(_root(tmp_path)[0])
-    g = compose._build_composite_graph(lay, shadow=None, border_idx=None, content_prefit=False)
+    g = compose._build_composite_graph(lay, shadow=None, border_idx=None,
+                                       content_prefit=False, subtitles=None)
     assert "scale=3840:2160[bg]" in g
     assert "overlay=x=160:y=240[base]" in g      # content rect origin
     assert "overlay=x=2640:y=240[cspk]" in g     # speaker rect origin
     assert "color=0x0b0b0d" in g                  # letterbox fill normalised from #
+    assert "subtitles=" not in g                  # no captions -> no burn
 
 
 def test_composite_graph_prefit_content_passes_through(tmp_path):
     # A pre-fitted content track is overlaid as-is (no scale/pad in the composite).
     lay = layout_mod.load(_root(tmp_path)[0])
-    g = compose._build_composite_graph(lay, shadow=None, border_idx=None, content_prefit=True)
+    g = compose._build_composite_graph(lay, shadow=None, border_idx=None,
+                                       content_prefit=True, subtitles=None)
     assert "[1:v]null[content]" in g
     assert "force_original_aspect_ratio" not in g
 
 
-def test_composite_graph_shadow_and_border(tmp_path):
+def test_composite_graph_shadow_border_and_captions(tmp_path):
     lay = layout_mod.load(_root(tmp_path)[0])
     shadow = {"opacity": 0.5, "blur": 18.0, "offset": (0, 10)}
-    g = compose._build_composite_graph(lay, shadow=shadow, border_idx=3, content_prefit=False)
-    assert "gblur=sigma=18.0" in g               # shadow blur
-    assert "colorchannelmixer=aa=0.5" in g       # shadow opacity
-    assert "[3:v]overlay=x=2640:y=240[out]" in g  # border on top at speaker origin
+    g = compose._build_composite_graph(lay, shadow=shadow, border_idx=3,
+                                       content_prefit=False,
+                                       subtitles=("work/ep/captions.ass", "styles"))
+    assert "gblur=sigma=18.0" in g                       # shadow blur
+    assert "colorchannelmixer=aa=0.5" in g               # shadow opacity
+    assert "[3:v]overlay=x=2640:y=240[framed]" in g      # border, then captions on top
+    assert "subtitles=work/ep/captions.ass:fontsdir=styles[out]" in g
 
 
 def test_color_helpers():

@@ -21,10 +21,11 @@ can never hit Windows' 8191-char command-line limit.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
-from . import cache, content as content_mod, ffmpeg, layout as layout_mod
+from . import cache, captions as captions_mod, content as content_mod, edl, ffmpeg, layout as layout_mod
 from .paths import Episode
 
 log = logging.getLogger("autocut.compose")
@@ -134,8 +135,26 @@ def _build_speaker_graph(layout: dict, *, use_mask: bool) -> str:
     return f"{base}[scaled];\n[scaled][1:v]alphamerge[spk]\n"
 
 
+def _build_captions(ep: Episode, layout: dict) -> str | None:
+    """Generate the config-driven 4K caption ASS from words.json, or None when
+    captions are disabled / there is no transcript. Burned at composite time so
+    disabling captions skips the burn entirely rather than rendering an empty
+    track (spec section 6)."""
+    cfg = layout.get("captions") or {}
+    if not cfg.get("enabled", True):
+        return None
+    if not ep.words_json.exists():
+        log.warning("compose: captions enabled but no transcript at %s; skipping", ep.words_json)
+        return None
+    words_doc = json.loads(ep.words_json.read_text(encoding="utf-8"))
+    edl_doc = edl.load(ep.edl_json)
+    cw, ch = layout_mod.canvas_size(layout)
+    header = captions_mod.style_header_from_config(cfg, cw, ch)
+    return captions_mod.build_ass(words_doc, edl_doc, header)
+
+
 def _build_composite_graph(layout: dict, *, shadow: dict | None, border_idx: int | None,
-                           content_prefit: bool) -> str:
+                           content_prefit: bool, subtitles: tuple[str, str] | None) -> str:
     cw, ch = layout_mod.canvas_size(layout)
     cxx, cxy, cwd, chd = layout_mod.rect(layout, "content")
     sx, sy, rw, rh = layout_mod.rect(layout, "speaker")
@@ -175,7 +194,12 @@ def _build_composite_graph(layout: dict, *, shadow: dict | None, border_idx: int
     lines.append(f"[{cur}][2:v]overlay=x={sx}:y={sy}[cspk]")
     cur = "cspk"
     if border_idx is not None:
-        lines.append(f"[{cur}][{border_idx}:v]overlay=x={sx}:y={sy}[out]")
+        lines.append(f"[{cur}][{border_idx}:v]overlay=x={sx}:y={sy}[framed]")
+        cur = "framed"
+    # Burn captions last, over the finished frame (spec section 6).
+    if subtitles is not None:
+        ass_rel, fonts_rel = subtitles
+        lines.append(f"[{cur}]subtitles={ass_rel}:fontsdir={fonts_rel}[out]")
     else:
         lines.append(f"[{cur}]null[out]")
     return ";\n".join(lines) + "\n"
@@ -271,7 +295,20 @@ def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> No
             border_idx = 3
             inputs += ["-loop", "1", "-i", border_png]
 
-    graph = _build_composite_graph(layout, shadow=shadow, border_idx=border_idx, content_prefit=content_prefit)
+    # Captions: generate the ASS and burn it in-graph. Disabled -> no subtitles
+    # filter at all (no empty track). The subtitles path must be relative and
+    # forward-slashed, and ffmpeg runs from the repo root, because a Windows
+    # drive-letter colon collides with the filter-option separator.
+    ass_text = _build_captions(ep, layout)
+    subtitles = None
+    if ass_text is not None:
+        ep.captions_ass.write_text(ass_text, encoding="utf-8")
+        ass_rel = ep.captions_ass.resolve().relative_to(ep.root.resolve()).as_posix()
+        fonts_rel = ep.styles_dir.resolve().relative_to(ep.root.resolve()).as_posix()
+        subtitles = (ass_rel, fonts_rel)
+
+    graph = _build_composite_graph(layout, shadow=shadow, border_idx=border_idx,
+                                   content_prefit=content_prefit, subtitles=subtitles)
     input_hash = cache.hash_inputs({
         "speaker": cache.hash_file(ep.speaker_layer) if (ep.speaker_layer.exists() and not ffmpeg.is_dry_run()) else "dry",
         "bg": cache.hash_file(bg) if (bg.exists() and not ffmpeg.is_dry_run()) else "dry",
@@ -280,6 +317,7 @@ def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> No
         "graph": graph,
         "border": {"width": bw, "color": border_cfg.get("color")} if border_idx is not None else None,
         "shadow": shadow,
+        "captions": ass_text,
         "fps": fps,
         "seconds": STEP1_SECONDS,
         "crf": COMPOSITE_CRF,
@@ -290,18 +328,21 @@ def _render_composite(ep: Episode, layout: dict, fps: str, *, force: bool) -> No
 
     ep.compose_dir.mkdir(parents=True, exist_ok=True)
     ep.compose_filter_script.write_text(graph, encoding="utf-8")
-    log.info("compose: compositing (shadow=%s border=%s) -> %s",
-             bool(shadow), border_idx is not None, ep.compose_preview)
-    ffmpeg.run_ffmpeg([
-        *inputs,
-        "-/filter_complex", ep.compose_filter_script,
-        "-map", "[out]",
-        "-t", f"{STEP1_SECONDS}",
-        "-r", fps,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", COMPOSITE_CRF, "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        ep.compose_preview,
-    ])
+    log.info("compose: compositing (shadow=%s border=%s captions=%s) -> %s",
+             bool(shadow), border_idx is not None, subtitles is not None, ep.compose_preview)
+    ffmpeg.run_ffmpeg(
+        [
+            *inputs,
+            "-/filter_complex", ep.compose_filter_script,
+            "-map", "[out]",
+            "-t", f"{STEP1_SECONDS}",
+            "-r", fps,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", COMPOSITE_CRF, "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            ep.compose_preview,
+        ],
+        cwd=str(ep.root),  # keep the subtitles path relative for Windows escaping
+    )
     cache.mark_done(stage_dir, input_hash, extra={"stage": "compose:composite"})
 
 
