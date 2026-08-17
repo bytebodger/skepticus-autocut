@@ -17,6 +17,7 @@ dependencies = [
     "requests",        # faster-whisper imports it but doesn't declare it
     "python-multipart",
     "pyyaml",          # config/layout.yaml for the phase-2 compositor
+    "anthropic",       # LLM shot-list authoring (phase-3 visuals)
 ]
 
 [project.optional-dependencies]

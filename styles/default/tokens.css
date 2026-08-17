@@ -1,0 +1,34 @@
+/* Design tokens for the `default` style (placeholder).
+ *
+ * HyperFrames infographics import this so they sit in the same visual world as
+ * the illustrations (visuals spec section 3). The palette here MUST match the
+ * one in STYLE.md — palette consistency is what reads as house style.
+ * Replace these values during Phase 3A. */
+
+:root {
+  /* Palette — keep in sync with STYLE.md */
+  --ink: #1a1a1a;
+  --paper: #f4f1ea;
+  --accent: #c8462d;
+  --cool: #2d6a8c;
+  --muted: #8a8578;
+
+  /* Type scale (4K-oriented; placeholder) */
+  --font-body: "Arial", sans-serif;
+  --font-display: "Arial", sans-serif;
+  --fs-100: 40px;
+  --fs-200: 56px;
+  --fs-300: 80px;
+  --fs-400: 120px;
+  --fs-500: 180px;
+
+  /* Spacing scale */
+  --space-1: 12px;
+  --space-2: 24px;
+  --space-3: 48px;
+  --space-4: 96px;
+
+  /* Strokes / radii */
+  --stroke: 4px;
+  --radius: 24px;
+}

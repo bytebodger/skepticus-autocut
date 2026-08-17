@@ -152,6 +152,12 @@ class Episode:
     def content_filter_script(self) -> Path:
         return self.compose_dir / "content_track.filter"
 
+    # --- phase 3 visuals ---
+    @property
+    def shotlist_json(self) -> Path:
+        """Authored shot list (words.json -> shotlist.json), spec section 5."""
+        return self.work / "shotlist.json"
+
     # --- output ---
     @property
     def out_dir(self) -> Path:

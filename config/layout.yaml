@@ -3,6 +3,10 @@
 # Move the speaker to the left, resize the content window, etc. by editing this
 # file and re-running `autocut compose <episode>`.
 
+# Swappable per-episode visual style — a directory styles/<name>/ holding
+# STYLE.md, tokens.css, and references/ (visuals spec section 3). Select by name.
+style: default
+
 canvas:
   width: 3840
   height: 2160
