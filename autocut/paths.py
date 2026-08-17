@@ -168,6 +168,12 @@ class Episode:
         """Resumable checkpoint + per-shot generation record."""
         return self.visuals_dir / "manifest.json"
 
+    @property
+    def visuals_content_json(self) -> Path:
+        """content.json emitted by the render stage for the compositor to consume
+        (visuals spec section 9). Items reference the rendered <shot_id>.webm."""
+        return self.visuals_dir / "content.json"
+
     # --- output ---
     @property
     def out_dir(self) -> Path:

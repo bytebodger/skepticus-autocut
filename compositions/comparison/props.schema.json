@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "comparison props",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Two or three things compared side by side; each column arrives in turn.",
+      "minItems": 2,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "detail": { "type": "string" }
+        },
+        "required": ["label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

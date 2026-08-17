@@ -126,6 +126,12 @@ def _cmd_visuals(ep, args):
     visuals_mod.run(ep, force=args.force)
 
 
+def _cmd_visuals_render(ep, args):
+    """Phase-3 visuals: render built HyperFrames compositions to webm + content.json."""
+    from . import render as render_mod  # lazy: keeps cli importable without websockets
+    render_mod.run(ep, force=args.force, workers=args.workers)
+
+
 def _cmd_render(ep, args):
     """Everything after review: cut -> grade -> captions -> overlays -> composite -> qc."""
     cut_mod.run(ep, force=args.force)
@@ -182,6 +188,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=fn.__doc__ or name)
         sp.add_argument("episode")
         sp.set_defaults(func=fn)
+
+    # visuals-render renders HyperFrames compositions; --workers tunes parallel
+    # Chrome contexts (capture is the bottleneck).
+    vr = sub.add_parser("visuals-render", help=_cmd_visuals_render.__doc__ or "visuals-render")
+    vr.add_argument("episode")
+    vr.add_argument("--workers", type=int, default=None,
+                    help="parallel Chrome render contexts (default: config or 3)")
+    vr.set_defaults(func=_cmd_visuals_render)
 
     # compose takes preview/range options for iterating without a full render.
     cp = sub.add_parser("compose", help=_cmd_compose.__doc__ or "compose")

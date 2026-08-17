@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Phase-3 content-window card (2400x1680); see pull_quote for the marker's role. -->
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; align-items: stretch;
+    padding: var(--card-pad);
+    background: var(--panel);
+    border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+  }
+  .cols { display: flex; flex: 1; gap: 0; align-items: stretch; }
+  .col  {
+    flex: 1; display: flex; flex-direction: column; justify-content: flex-start;
+    padding: 0 var(--space-4); opacity: 0;          /* sides arrive in turn */
+  }
+  .col + .col { border-left: 2px solid rgba(240,240,244,0.14); }
+  .rule  { width: 128px; height: var(--rule); background: var(--accent); margin-bottom: var(--space-3); }
+  .col.cool  .rule  { background: var(--cool); }
+  .col.third .rule  { background: var(--chrome); }
+  .label {
+    font-family: var(--font-display); font-weight: var(--fw-black);
+    font-size: var(--fs-h2); line-height: var(--lh-tight); color: var(--accent);
+    margin-bottom: var(--space-3);
+  }
+  .col.cool  .label { color: var(--cool); }
+  .col.third .label { color: var(--chrome); }
+  .detail { font-size: var(--fs-body); font-weight: var(--fw-regular);
+            line-height: var(--lh-body); color: var(--paper); }
+  @keyframes arrive { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="cols" id="cols"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+
+    var items = (P.items && P.items.length) ? P.items : [
+      { label: "Side A", detail: "The first thing being compared." },
+      { label: "Side B", detail: "The second thing, side by side." }
+    ];
+    items = items.slice(0, 3);                       // two or three, per the taxonomy
+    var tone = ["", "cool", "third"];
+    var cols = document.getElementById('cols');
+    cols.innerHTML = items.map(function (it, i) {
+      return '<div class="col ' + tone[i] + '">' +
+               '<div class="rule"></div>' +
+               '<div class="label"></div>' +
+               '<div class="detail"></div>' +
+             '</div>';
+    }).join('');
+    var colEls = cols.querySelectorAll('.col');
+    Array.prototype.forEach.call(colEls, function (el, i) {
+      el.querySelector('.label').textContent = items[i].label || "";
+      el.querySelector('.detail').textContent = items[i].detail || "";
+    });
+
+    // Sides arrive in turn across the first ~55% of the shot — never together.
+    var fade = Math.min(0.6, D * 0.12);
+    var start = D * 0.06, span = D * 0.50, m = colEls.length;
+    Array.prototype.forEach.call(colEls, function (el, i) {
+      var delay = start + (m > 1 ? span * i / m : 0);
+      el.style.animation = 'arrive ' + fade + 's ' + EASE + ' ' + delay + 's both';
+    });
+  </script>
+</body>
+</html>

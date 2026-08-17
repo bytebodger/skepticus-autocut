@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "bullet_reveal props",
+  "type": "object",
+  "properties": {
+    "bullets": {
+      "type": "array",
+      "description": "Enumerated points, revealed one at a time across the shot.",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "title": { "type": "string", "description": "Optional eyebrow heading above the list." }
+  },
+  "required": ["bullets"],
+  "additionalProperties": false
+}

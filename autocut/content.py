@@ -37,12 +37,25 @@ def _ff_color(value: str) -> str:
     return "0x" + v[1:] if v.startswith("#") else v
 
 
-def load_items(ep: Episode) -> list[dict] | None:
-    """Items from content.json, or None if the episode has no content folder."""
-    if not ep.content_json.exists():
-        return None
-    data = json.loads(ep.content_json.read_text(encoding="utf-8"))
-    return list(data.get("items") or [])
+def _content_source(ep: Episode) -> tuple[Path, Path] | tuple[None, None]:
+    """(content.json path, base dir for item files). Prefer the render stage's
+    generated content.json (files under work/<ep>/visuals/); fall back to a manual
+    inbox drop (inbox/<ep>_content/)."""
+    if ep.visuals_content_json.exists():
+        return ep.visuals_content_json, ep.visuals_dir
+    if ep.content_json.exists():
+        return ep.content_json, ep.content_dir
+    return None, None
+
+
+def load_items(ep: Episode) -> tuple[list[dict], Path] | tuple[None, None]:
+    """(items, base_dir) from the chosen content.json, or (None, None) if the
+    episode has no content source."""
+    src, base = _content_source(ep)
+    if src is None:
+        return None, None
+    data = json.loads(src.read_text(encoding="utf-8"))
+    return list(data.get("items") or []), base
 
 
 def _place(items: list[dict], ep: Episode) -> tuple[list[tuple[dict, float]], float]:
@@ -73,7 +86,7 @@ def _fit_filter(cw: int, ch: int, fit: str, fill: str) -> str:
 
 
 def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
-                placed: list[tuple[dict, float]]):
+                placed: list[tuple[dict, float]], base_dir: Path):
     """Return (input_args, graph_text, uses_alpha) for the content track over the
     output window (w0, length). Item output times are made window-relative."""
     w0, dur = window
@@ -97,7 +110,7 @@ def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
     for i, (it, w_start) in enumerate(rel):
         if w_start >= dur:
             continue
-        path = ep.content_dir / it["file"]
+        path = base_dir / it["file"]
         item_dur = float(it.get("duration", DEFAULT_ITEM_DURATION))
         if gap == "background":
             seglen = item_dur
@@ -146,7 +159,7 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
                  *, force: bool = False) -> Path | None:
     """Render the content track for the output window, cached. Returns its path,
     or None if the episode has no content.json / no items land in the window."""
-    items = load_items(ep)
+    items, base_dir = load_items(ep)
     if items is None:
         return None
     placed, _out_dur = _place(items, ep)
@@ -154,14 +167,14 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
         log.warning("content: no items map into the output timeline; skipping content track")
         return None
 
-    inputs, graph, uses_alpha = build_graph(ep, layout, fps, window, placed)
+    inputs, graph, uses_alpha = build_graph(ep, layout, fps, window, placed, base_dir)
     dur = window[1]
     dry = ffmpeg.is_dry_run()
 
     stage_dir = ep.compose_dir / "content"
     item_hashes = {
-        it["file"]: (cache.hash_file(ep.content_dir / it["file"])
-                     if (ep.content_dir / it["file"]).exists() and not dry else "dry")
+        it["file"]: (cache.hash_file(base_dir / it["file"])
+                     if (base_dir / it["file"]).exists() and not dry else "dry")
         for it, _ in placed
     }
     input_hash = cache.hash_inputs({

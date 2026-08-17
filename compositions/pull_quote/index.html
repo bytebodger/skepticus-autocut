@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Marks this as a Phase-3 content-window card (2400x1680), distinct from the
+     Phase-1 overlay compositions that share the compositions/ directory. The
+     render stage only renders compositions carrying this marker. -->
+<meta name="hyperframes-surface" content="content-card">
+<!-- The active style's tokens are provided alongside the composition at render
+     time (visuals spec section 7); swapping styles swaps this file. -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* Content-rect native size. Transparent background: the card composites into
+     the content window over the footage, it never replaces it. */
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel);
+    border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+  }
+  .mark {
+    font-family: var(--font-display); font-weight: var(--fw-black);
+    font-size: 200px; line-height: .5; height: 120px; color: var(--accent);
+    opacity: .85; margin-bottom: var(--space-2);
+  }
+  .quote { font-family: var(--font-display); font-weight: var(--fw-bold);
+           font-size: var(--fs-display); line-height: var(--lh-tight); }
+  .line  { display: block; opacity: 0; }          /* each visual line fades in turn */
+  .attr  {
+    margin-top: var(--space-4); font-size: var(--fs-small); font-weight: var(--fw-bold);
+    letter-spacing: 3px; text-transform: uppercase; color: var(--accent); opacity: 0;
+  }
+  .attr::before {
+    content: ""; display: inline-block; width: 72px; height: var(--rule);
+    background: var(--accent); vertical-align: middle; margin-right: var(--space-2);
+    transform: translateY(-8px);
+  }
+  @keyframes fadein { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="mark">&ldquo;</div>
+    <div class="quote" id="quote"></div>
+    <div class="attr" id="attr"></div>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    // Duration drives pacing: the same quote fades slower over a long hold and
+    // faster over a short one, so it always fits the shot (spec section 3).
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+
+    var quote = P.quote || "The quote goes here, and it fades in one line at a time.";
+    var attribution = P.attribution || "";
+    var qEl = document.getElementById('quote');
+
+    function init() {
+      // Wrap words, let them lay out, then group by vertical position into VISUAL
+      // lines — so the fade is per rendered line no matter where the text wraps.
+      // Runs after load + fonts so the external tokens.css has applied and
+      // offsetTop reflects the real wrapped layout (not a pre-style collapse).
+      qEl.innerHTML = quote.split(/\s+/)
+        .map(function (w) { return '<span class="w">' + w + '</span>'; }).join(' ');
+      var top = null, lines = [], cur = null;
+      Array.prototype.forEach.call(qEl.querySelectorAll('.w'), function (s) {
+        if (top === null || s.offsetTop !== top) { top = s.offsetTop; cur = []; lines.push(cur); }
+        cur.push(s.textContent);
+      });
+      qEl.innerHTML = lines.map(function (g) { return '<span class="line">' + g.join(' ') + '</span>'; }).join(' ');
+      var lineEls = qEl.querySelectorAll('.line');
+
+      // Lines reveal across the first ~45% of the shot; attribution lands last.
+      var fade = Math.min(0.6, D * 0.12);
+      var introStart = D * 0.05, introSpan = D * 0.42;
+      var n = lineEls.length;
+      Array.prototype.forEach.call(lineEls, function (el, i) {
+        var delay = introStart + (n > 1 ? introSpan * i / n : 0);
+        el.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + delay + 's both';
+      });
+      if (attribution) {
+        var a = document.getElementById('attr');
+        a.textContent = attribution;
+        a.style.animation = 'fadein ' + fade + 's ' + EASE + ' ' + (introStart + introSpan + D * 0.05) + 's both';
+      }
+    }
+
+    function ready() {
+      var fonts = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+      fonts.then(function () { requestAnimationFrame(init); });
+    }
+    if (document.readyState === 'complete') ready();
+    else window.addEventListener('load', ready);
+  </script>
+</body>
+</html>

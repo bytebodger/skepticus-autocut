@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml",          # config/layout.yaml for the phase-2 compositor
     "anthropic",       # LLM shot-list authoring (phase-3 visuals)
     "numpy",           # placeholder image backend + PNG encoding (phase-3 visuals)
+    "websockets",      # drives headless Chrome over CDP for the render stage (phase-3 visuals)
 ]
 
 [project.optional-dependencies]

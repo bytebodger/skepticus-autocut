@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pull_quote props",
+  "type": "object",
+  "properties": {
+    "quote": { "type": "string", "description": "The quoted text; fades in by visual line." },
+    "attribution": { "type": "string", "description": "Speaker or source; fades in last." }
+  },
+  "required": ["quote"],
+  "additionalProperties": false
+}

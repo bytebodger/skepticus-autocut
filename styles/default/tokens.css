@@ -1,34 +1,68 @@
-/* Design tokens for the `default` style (placeholder).
+/* Design tokens for the `default` style.
  *
- * HyperFrames infographics import this so they sit in the same visual world as
- * the illustrations (visuals spec section 3). The palette here MUST match the
- * one in STYLE.md — palette consistency is what reads as house style.
- * Replace these values during Phase 3A. */
+ * Consumed by every HyperFrames composition (visuals spec sections 3, 7): the
+ * cards read their palette, type scale, spacing, and chrome from here, so the
+ * whole episode shares one house style and a restyle is a token swap plus a
+ * re-render — no regeneration.
+ *
+ * Tuned to sit inside the 2400x1680 content window on the fiery 4K background
+ * (assets/backgrounds/fiery-background-4k.png). The fire is bright and busy, so
+ * a card needs a solid warm-charcoal panel to stay legible; the panel is framed
+ * as a sibling of the speaker window in config/layout.yaml (light #f0f0f4
+ * border, rounded corners, soft drop shadow). Keep the palette in sync with
+ * STYLE.md — palette consistency is what reads as house style.
+ */
 
 :root {
-  /* Palette — keep in sync with STYLE.md */
-  --ink: #1a1a1a;
-  --paper: #f4f1ea;
-  --accent: #c8462d;
-  --cool: #2d6a8c;
-  --muted: #8a8578;
+  /* --- palette --- */
+  --ink:        #14100b;                 /* darkest warm charcoal */
+  /* Card body. High but not full opacity: text stays legible while the flames
+     glow faintly through, tying the card to the scene (and exercising alpha). */
+  --panel:      rgba(20, 16, 11, 0.92);
+  --paper:      #f7f2e8;                  /* primary text — warm off-white */
+  --muted:      #b7ad9b;                  /* secondary text / detail */
+  --accent:     #ffc24b;                  /* gold — harmonises with fire, pops on charcoal */
+  --accent-ink: #2a1c05;                  /* text on an accent fill */
+  --cool:       #7bc3d8;                  /* cool counter-tone: the 'other side' of a comparison */
+  --chrome:     #f0f0f4;                  /* matches the speaker-window border */
 
-  /* Type scale (4K-oriented; placeholder) */
-  --font-body: "Arial", sans-serif;
-  --font-display: "Arial", sans-serif;
-  --fs-100: 40px;
-  --fs-200: 56px;
-  --fs-300: 80px;
-  --fs-400: 120px;
-  --fs-500: 180px;
+  /* --- card chrome (echoes the speaker window) --- */
+  --card-radius:       36px;
+  --card-inset:        64px;              /* transparent margin around the panel: alpha + fire peek */
+  --card-pad:          104px;
+  --card-border-width: 3px;
+  --card-border-color: rgba(240, 240, 244, 0.55);
+  --card-shadow:       0 24px 80px rgba(0, 0, 0, 0.55);
+  --rule:              6px;               /* accent rules / dividers */
 
-  /* Spacing scale */
+  /* --- type --- */
+  --font-display: "Montserrat", "Segoe UI", system-ui, sans-serif;
+  --font-body:    "Montserrat", "Segoe UI", system-ui, sans-serif;
+  --fw-regular: 500;
+  --fw-bold:    800;
+  --fw-black:   900;
+
+  /* Type scale — content-rect / 4K-oriented (a 1080p size reads tiny here). */
+  --fs-eyebrow: 36px;
+  --fs-small:   46px;
+  --fs-body:    58px;
+  --fs-lead:    70px;
+  --fs-h2:      88px;
+  --fs-display: 104px;
+  --fs-h1:      132px;
+
+  --lh-tight: 1.12;
+  --lh-body:  1.34;
+
+  /* --- spacing --- */
   --space-1: 12px;
   --space-2: 24px;
   --space-3: 48px;
   --space-4: 96px;
+  --space-5: 144px;
 
-  /* Strokes / radii */
-  --stroke: 4px;
-  --radius: 24px;
+  /* --- motion --- */
+  /* Per-element fade shape. The overall timeline (stagger, hold) is scaled to
+     the shot's duration by each composition's script, not baked in here. */
+  --ease: cubic-bezier(.22, .61, .36, 1);
 }

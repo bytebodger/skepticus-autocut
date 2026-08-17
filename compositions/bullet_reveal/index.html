@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Phase-3 content-window card (2400x1680); see pull_quote for the marker's role. -->
+<meta name="hyperframes-surface" content="content-card">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; width: 2400px; height: 1680px; background: transparent; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-body); color: var(--paper); }
+
+  .card {
+    position: absolute; inset: var(--card-inset);
+    display: flex; flex-direction: column; justify-content: center;
+    padding: var(--card-pad);
+    background: var(--panel);
+    border: var(--card-border-width) solid var(--card-border-color);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+  }
+  .eyebrow {
+    font-size: var(--fs-eyebrow); font-weight: var(--fw-bold); letter-spacing: 4px;
+    text-transform: uppercase; color: var(--accent); margin-bottom: var(--space-3);
+    opacity: 0;
+  }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: baseline; gap: var(--space-3);
+    font-size: var(--fs-lead); font-weight: var(--fw-bold); line-height: var(--lh-tight);
+    color: var(--paper); opacity: 0;                 /* each bullet appears in sequence */
+  }
+  li + li { margin-top: var(--space-3); }
+  .num {
+    flex: none; font-family: var(--font-display); font-weight: var(--fw-black);
+    font-size: var(--fs-h2); color: var(--accent); min-width: 96px;
+    line-height: 1;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="card" data-start="0" data-duration="8">
+    <div class="eyebrow" id="eyebrow"></div>
+    <ul id="list"></ul>
+  </div>
+  <script>
+    var P = (window.PROPS || {});
+    var card = document.querySelector('.card');
+    var D = Number(window.DURATION) || Number(card.dataset.duration) || 8;
+    var EASE = 'cubic-bezier(.22,.61,.36,1)';
+
+    var bullets = (P.bullets && P.bullets.length) ? P.bullets
+      : ["First point", "Second point", "Third point"];
+    var heading = P.title || P.heading || "";
+    var eb = document.getElementById('eyebrow');
+    if (heading) { eb.textContent = heading; } else { eb.style.display = 'none'; }
+
+    var list = document.getElementById('list');
+    list.innerHTML = bullets.map(function (b, i) {
+      return '<li><span class="num">' + (i + 1) + '</span><span class="txt"></span></li>';
+    }).join('');
+    var lis = list.querySelectorAll('li');
+    Array.prototype.forEach.call(lis, function (li, i) {
+      li.querySelector('.txt').textContent = bullets[i];
+    });
+
+    // Bullets appear in sequence spread across most of the shot, so a point can
+    // land as it's spoken. The stagger scales with duration: five over 20s pace
+    // differently than five over 8s (spec section 3).
+    var fade = Math.min(0.5, D * 0.10);
+    var start = D * 0.06, span = D * 0.74, k = lis.length;
+    if (heading) eb.style.animation = 'pop ' + fade + 's ' + EASE + ' 0s both';
+    Array.prototype.forEach.call(lis, function (li, i) {
+      var delay = start + (k > 1 ? span * i / (k - 1) : 0);
+      li.style.animation = 'pop ' + fade + 's ' + EASE + ' ' + delay + 's both';
+    });
+  </script>
+</body>
+</html>
