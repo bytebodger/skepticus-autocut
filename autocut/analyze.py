@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import edl
+from . import edl, retakes
 from .paths import Episode
 
 log = logging.getLogger("autocut.analyze")
@@ -33,6 +33,7 @@ PAD = 0.10            # 100ms padding kept on each side of a keep boundary
 LONG_SILENCE = 0.70   # mid-sentence silence over this gets trimmed
 MIN_DROP = 0.15       # never make a drop shorter than this — the cut costs more
 SENTENCE_GAP = 0.50   # a gap this long implies a sentence boundary
+END_WORD_MARGIN = 0.50  # keep this much past the last word when no tail silence is confirmed
 
 # Single-word fillers only. Multi-word fillers ("you know", "I mean") are left
 # for Claude Code to judge in context — automating them is not reliably safe.
@@ -97,11 +98,26 @@ def _discover_cuts(words: list[dict], silences: list[dict], duration: float) -> 
 
     first, last = words[0], words[-1]
 
-    # 1. Leading / trailing dead air. Trivial and always safe.
+    # 1. Leading / trailing dead air. Bound by confirmed silence, not the first/
+    #    last word timestamp: Whisper routinely under-runs the final word's end, so
+    #    cutting at last["end"] clips the tail of the last word. Start the trailing
+    #    dead-air at the real silence onset instead (keep the word's full audio).
     if first["start"] > PAD:
-        cuts.append(_Cut(0.0, first["start"], "dead_air", 1.0, "leading dead air", pad="right"))
+        lead_end = first["start"]
+        lead_sil = [iv for iv in silences if float(iv["start"]) <= PAD]
+        if lead_sil:
+            lead_end = min(lead_end, float(lead_sil[0]["end"]))
+        if lead_end > PAD:
+            cuts.append(_Cut(0.0, lead_end, "dead_air", 1.0, "leading dead air", pad="right"))
     if duration - last["end"] > PAD:
-        cuts.append(_Cut(last["end"], duration, "dead_air", 1.0, "trailing dead air", pad="left"))
+        trailing_start = last["end"]
+        tail_sil = [iv for iv in silences if float(iv["end"]) >= duration - 1.0]
+        if tail_sil:                                   # real silence carries to the end
+            trailing_start = max(last["end"], float(tail_sil[0]["start"]))
+        else:                                          # no confirmed tail silence: keep a margin
+            trailing_start = min(duration, last["end"] + END_WORD_MARGIN)
+        if duration - trailing_start > PAD:
+            cuts.append(_Cut(trailing_start, duration, "dead_air", 1.0, "trailing dead air", pad="left"))
 
     # 2. Long mid-sentence silences. A gap between consecutive Whisper word
     #    timestamps is trimmed ONLY where the independent, energy-based
@@ -273,6 +289,19 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
     duration = float(probe["source_duration"])
 
     cuts = _discover_cuts(words, silences, duration)
+    # Retake detection (retakes spec section 3.5): EVERY detected cue produces a
+    # cut — confidence governs only the boundary, never whether to cut. Low-
+    # confidence rows carry needs_review for the review gate to nudge their scope.
+    # pad="right": pull the drop end back into the pre-redo silence for a clean redo
+    # onset; the flub start sits at the (0-gap) prefix boundary, where the cut
+    # stage's 25ms fade covers the join. Merges with silence/filler (section 10).
+    retake_drops = retakes.retake_drops(words_doc, silence_doc)
+    for d in retake_drops:
+        cuts.append(_Cut(d["start"], d["end"], "retake", d["confidence"], d["note"], pad="right"))
+    if retake_drops:
+        review = sum(1 for d in retake_drops if d.get("needs_review"))
+        log.info("autoauthor: retakes cut=%d (%d flagged for review) %s",
+                 len(retake_drops), review, retakes.summary(retake_drops, duration))
     drops = _merge_and_snap(cuts, duration, fps)
     segments = _build_segments(drops, duration, fps)
     _assert_plausible(ep, segments, len(drops), duration, silences)

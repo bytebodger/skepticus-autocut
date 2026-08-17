@@ -4,9 +4,15 @@ Uses faster-whisper (CTranslate2 backend): ~4x faster and lower VRAM than the
 reference implementation. large-v3 at float16 uses ~4.7GB, comfortable on 12GB.
 
 Two outputs:
-  * words.json  — word-level timestamps for the EDL author and captions.
+  * words.json  — word-level timestamps for the EDL author and captions. Every
+    timestamp is in the SOURCE timeline (== speech.wav time). We transcribe the
+    full audio with faster-whisper's vad_filter OFF, because vad_filter returns
+    timestamps in the VAD-filtered timeline and its restore pass is unreliable
+    (drifts ~15s by mid-file on mulligantest). We run VAD ourselves only to drop
+    hallucinations in true silence — a drop-only guard that never shifts a time.
   * silence.json — an independent silencedetect pass, because Whisper's VAD is
-    tuned for speech detection, not editorial pauses.
+    tuned for speech detection, not editorial pauses. (Unaffected by the above:
+    silencedetect measures real audio, so silence cuts were always in source time.)
 
 Determinism (spec section 15): the model revision, compute type, and beam size
 are pinned here and recorded into words.json. Don't change them mid-project.
@@ -132,10 +138,67 @@ def _add_cuda_dll_dirs() -> None:
                 os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
 
 
+VAD_SAMPLE_RATE = 16000
+VAD_MIN_SILENCE_MS = 300      # matches the pause we treat as a gap
+# Short, silence-isolated VAD chunks are where deliberate LONE words live — retake
+# cues ("mulligan"), one-word interjections. In the full-audio pass Whisper smooths
+# these into a neighbouring sentence (e.g. a spoken "mulligan" surrounded by pauses
+# came back as "aggressive"), so we re-transcribe each such chunk in isolation and
+# record it in an `isolated` sidecar. This never touches the main word timeline; it
+# only surfaces lone words the sentence-context pass mis-hears.
+ISOLATED_MAX_DUR = 3.0       # a lone cue is short
+ISOLATED_MIN_GAP = 0.4       # silence on both sides marks it as deliberate/isolated
+ISOLATED_PAD = 0.2           # decode a hair either side so the word isn't clipped
+ISOLATED_MAX_COUNT = 200     # safety cap on how many chunks we re-transcribe
+
+
+def _speech_regions(audio) -> list[tuple[float, float]]:
+    """VAD speech regions in the SOURCE timeline (seconds)."""
+    from faster_whisper.vad import get_speech_timestamps, VadOptions
+    chunks = get_speech_timestamps(
+        audio, VadOptions(min_silence_duration_ms=VAD_MIN_SILENCE_MS),
+        sampling_rate=VAD_SAMPLE_RATE)
+    return [(c["start"] / VAD_SAMPLE_RATE, c["end"] / VAD_SAMPLE_RATE) for c in chunks]
+
+
+def _pick_isolated(regions: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Short speech regions bounded by silence on both sides — deliberate lone
+    words. Pure (no model) so the selection is unit-testable."""
+    out = []
+    for i, (s, e) in enumerate(regions):
+        if not (0.2 <= e - s <= ISOLATED_MAX_DUR):
+            continue
+        gap_before = s - regions[i - 1][1] if i > 0 else 1e9
+        gap_after = regions[i + 1][0] - e if i + 1 < len(regions) else 1e9
+        if gap_before >= ISOLATED_MIN_GAP and gap_after >= ISOLATED_MIN_GAP:
+            out.append((s, e))
+    return out
+
+
+def _isolated_chunks(audio, model, beam_size: int) -> list[dict]:
+    """Re-transcribe each short silence-isolated chunk on its own; the isolated
+    context recognises the lone word the full-audio pass smooths away."""
+    cand = _pick_isolated(_speech_regions(audio))
+    if len(cand) > ISOLATED_MAX_COUNT:
+        log.warning("transcribe: %d isolated chunks; capping re-transcription at %d",
+                    len(cand), ISOLATED_MAX_COUNT)
+        cand = cand[:ISOLATED_MAX_COUNT]
+    out = []
+    for s, e in cand:
+        a0 = max(0, int((s - ISOLATED_PAD) * VAD_SAMPLE_RATE))
+        a1 = min(audio.shape[0], int((e + ISOLATED_PAD) * VAD_SAMPLE_RATE))
+        segs, _ = model.transcribe(audio[a0:a1], vad_filter=False, beam_size=beam_size,
+                                   condition_on_previous_text=False)
+        text = " ".join(seg.text for seg in segs).strip()
+        if text:
+            out.append({"start": round(s, 3), "end": round(e, 3), "text": text})
+    return out
+
+
 def _transcribe_words(ep: Episode) -> dict:
     # Imported lazily so the rest of the CLI works without CUDA/torch present.
     _add_cuda_dll_dirs()
-    from faster_whisper import WhisperModel
+    from faster_whisper import WhisperModel, decode_audio
 
     model = WhisperModel(
         MODEL,
@@ -143,17 +206,25 @@ def _transcribe_words(ep: Episode) -> dict:
         compute_type=COMPUTE_TYPE,
         revision=MODEL_REVISION,
     )
+
+    # Transcribe the FULL audio with VAD OFF so word timestamps land in the source
+    # timeline. faster-whisper's own vad_filter returns timestamps in the
+    # VAD-filtered timeline and its restore pass is unreliable — verified on
+    # mulligantest, where a word truly at 176.8s was reported at 163.0s (~14s
+    # early, error growing through the file) and a spurious word was inserted.
+    # Transcribing the whole file avoids the remap entirely. We do NOT drop words
+    # against VAD (that deleted real speech in near-silence); Whisper's own
+    # no-speech handling plus condition_on_previous_text=False keep silence quiet.
+    audio = decode_audio(str(ep.speech_wav), sampling_rate=VAD_SAMPLE_RATE)
     segments, info = model.transcribe(
-        str(ep.speech_wav),
+        audio,
         word_timestamps=True,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 300},
+        vad_filter=False,
         beam_size=BEAM_SIZE,
         # Off: leaving it on makes Whisper hallucinate repeated phrases during
         # long silences — exactly the material we're trying to cut.
         condition_on_previous_text=False,
     )
-
     words = []
     i = 0
     for seg in segments:
@@ -167,13 +238,20 @@ def _transcribe_words(ep: Episode) -> dict:
             })
             i += 1
 
+    isolated = _isolated_chunks(audio, model, BEAM_SIZE)
+    log.info("transcribe: %d words, %d isolated short chunk(s) re-transcribed", len(words), len(isolated))
+
     return {
         "language": info.language,
         "model": MODEL,
         "model_revision": MODEL_REVISION,
         "compute_type": COMPUTE_TYPE,
         "beam_size": BEAM_SIZE,
+        "timebase": "source",   # word timestamps are in the source timeline
         "words": words,
+        # Lone words re-transcribed in isolation (retake cues, interjections). The
+        # retake detector reads this; captions ignore it.
+        "isolated": isolated,
     }
 
 
@@ -232,6 +310,10 @@ def run(ep: Episode, *, force: bool = False) -> dict:
         "model_revision": MODEL_REVISION,
         "compute_type": COMPUTE_TYPE,
         "beam_size": BEAM_SIZE,
+        # Bump when the word-timestamp method changes so old (VAD-timeline) transcripts
+        # re-transcribe. "source-v2" = full-audio pass (no drop guard) + isolated-chunk
+        # sidecar for lone words.
+        "word_timebase": "source-v2",
         # The threshold is derived from the (hashed) audio, but the margin/override
         # that shape it must invalidate the cache when changed.
         "silence_margin_db": SILENCE_MARGIN_DB,

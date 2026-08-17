@@ -59,3 +59,23 @@ def test_run_refuses_to_write_empty_silence_json(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="0 silences"):
         transcribe.run(ep, force=True)
     assert not ep.silence_json.exists()
+
+
+# --- isolated-chunk selection (lone words / retake cues) ---
+
+def test_pick_isolated_selects_short_silence_bounded_regions():
+    # regions: [start, end]; gaps >= 0.4s and duration <= 3.0s qualify.
+    regions = [(0.0, 10.0), (12.0, 13.0), (13.2, 20.0), (25.0, 26.0)]
+    picked = transcribe._pick_isolated(regions)
+    # (12,13): 2s gap before, 0.2s gap after -> NOT isolated (after gap too small)
+    # (25,26): 5s gap before, edge after -> isolated
+    assert (25.0, 26.0) in picked
+    assert (12.0, 13.0) not in picked
+    assert (0.0, 10.0) not in picked          # too long
+
+
+def test_pick_isolated_rejects_long_regions():
+    regions = [(0.0, 0.5), (2.0, 8.0), (9.0, 9.6)]
+    picked = transcribe._pick_isolated(regions)
+    assert (2.0, 8.0) not in picked           # 6s, too long to be a lone word
+    assert (9.0, 9.6) in picked               # short, isolated by the long gap
