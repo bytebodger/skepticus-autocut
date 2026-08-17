@@ -114,6 +114,17 @@ def test_template_header_preserved():
     assert ass.count("[Events]") == 1
 
 
+def test_build_ass_window_offsets_and_clips():
+    # A window [10, 15] shifts caption times so the window start is 0 and drops
+    # words outside it (for --range / --preview clips).
+    words = _words((10.0, 10.4, "alpha"), (10.5, 10.9, "beta"), (20.0, 20.4, "gamma"))
+    e = _edl([{"id": "s1", "in": 0.0, "out": 30.0, "action": "keep"}])
+    ass = captions.build_ass(words, e, TEMPLATE, window=(10.0, 5.0))
+    assert "alpha" in ass and "beta" in ass
+    assert "gamma" not in ass            # outside the window -> dropped
+    assert "0:00:00.00" in ass           # first word shifted to output 0
+
+
 def _k_values(dialogue_line: str) -> list[int]:
     import re
     return [int(x) for x in re.findall(r"\\k(\d+)", dialogue_line)]

@@ -63,7 +63,7 @@ def test_no_content_json_is_none(tmp_path):
 def test_graph_hold_opaque_base_and_placement(tmp_path):
     ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mp4"}], _SEGS)
     placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mp4", "duration": 6}, 15.0)]
-    inputs, graph, alpha = content.build_graph(ep, _layout("hold"), "24", 40.0, placed, seconds=None)
+    inputs, graph, alpha = content.build_graph(ep, _layout("hold"), "24", (0.0, 40.0), placed)
     assert alpha is False
     assert "color=c=0x0b0b0d" in graph                         # hold base = letterbox fill
     assert "setpts=PTS-STARTPTS+5.000/TB" in graph             # item placed at out time
@@ -74,10 +74,21 @@ def test_graph_hold_opaque_base_and_placement(tmp_path):
     assert inputs.count("-i") == 2                              # one input per item
 
 
+def test_graph_window_offsets_and_filters_items(tmp_path):
+    # A window starting at 10s makes item output-times relative and drops items
+    # outside it. Item at out 5.0 is excluded; item at 15.0 -> rel 5.0.
+    ep = _setup(tmp_path, [{"file": "a.png"}, {"file": "b.mp4"}], _SEGS)
+    placed = [({"file": "a.png", "duration": 6}, 5.0), ({"file": "b.mp4", "duration": 6}, 15.0)]
+    inputs, graph, _ = content.build_graph(ep, _layout("hold"), "24", (10.0, 30.0), placed)
+    assert "setpts=PTS-STARTPTS+5.000/TB" in graph   # 15.0 - 10.0
+    assert "setpts=PTS-STARTPTS+0.000/TB" not in graph
+    assert inputs.count("-i") == 1                    # only the in-window item
+
+
 def test_graph_background_transparent_base_and_fade_out(tmp_path):
     ep = _setup(tmp_path, [{"file": "a.png"}], _SEGS)
     placed = [({"file": "a.png", "duration": 6}, 5.0)]
-    _, graph, alpha = content.build_graph(ep, _layout("background"), "24", 40.0, placed, seconds=None)
+    _, graph, alpha = content.build_graph(ep, _layout("background"), "24", (0.0, 40.0), placed)
     assert alpha is True
     assert "colorchannelmixer=aa=0" in graph                   # transparent base
     assert "fade=t=out" in graph                               # items fade back to wallpaper
@@ -86,7 +97,7 @@ def test_graph_background_transparent_base_and_fade_out(tmp_path):
 def test_graph_cut_transition_has_no_fades(tmp_path):
     ep = _setup(tmp_path, [{"file": "a.png"}], _SEGS)
     placed = [({"file": "a.png", "duration": 6}, 5.0)]
-    _, graph, _ = content.build_graph(ep, _layout("hold", ttype="cut"), "24", 40.0, placed, seconds=None)
+    _, graph, _ = content.build_graph(ep, _layout("hold", ttype="cut"), "24", (0.0, 40.0), placed)
     assert "fade=" not in graph
 
 

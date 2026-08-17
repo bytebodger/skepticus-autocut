@@ -130,9 +130,9 @@ class Episode:
         return self.compose_dir / "composite.filter"
 
     @property
-    def compose_preview(self) -> Path:
-        """Step-1 static composite (short clip) for checking the geometry."""
-        return self.compose_dir / "composite_10s.mp4"
+    def compose_output(self) -> Path:
+        """Composited show frame (full duration, or a --preview/--range window)."""
+        return self.compose_dir / "composite.mp4"
 
     @property
     def content_dir(self) -> Path:

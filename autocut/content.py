@@ -12,15 +12,15 @@ that composes cleanly with the exact output-time placement and with both gap
 modes (items fade to/from the wallpaper in ``background`` mode), where chaining
 ``xfade`` would drift the timeline and can't express item -> wallpaper -> item.
 
-``AUTOCUT_CONTENT_SECONDS`` caps the rendered length (a full hour-long track is
-an overnight encode); leave it unset for the real render.
+The track is rendered for a given output ``window`` (start, length) — the full
+output by default, or a --preview/--range window — so iteration doesn't force a
+full-length encode. Item output times are made relative to the window start.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 
 from . import cache, edl, ffmpeg, layout as layout_mod
@@ -72,16 +72,11 @@ def _fit_filter(cw: int, ch: int, fit: str, fill: str) -> str:
             f"pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color={fill}")
 
 
-def _cap_seconds(seconds: float | None) -> float | None:
-    if seconds is not None:
-        return seconds
-    env = os.environ.get("AUTOCUT_CONTENT_SECONDS")
-    return float(env) if env else None
-
-
-def build_graph(ep: Episode, layout: dict, fps: str, out_dur: float,
-                placed: list[tuple[dict, float]], *, seconds: float | None):
-    """Return (input_args, graph_text, uses_alpha) for the content track."""
+def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
+                placed: list[tuple[dict, float]]):
+    """Return (input_args, graph_text, uses_alpha) for the content track over the
+    output window (w0, length). Item output times are made window-relative."""
+    w0, dur = window
     _, _, cw, ch = layout_mod.rect(layout, "content")
     cfg = layout["content"]
     fit = cfg.get("fit", "contain")
@@ -91,14 +86,15 @@ def build_graph(ep: Episode, layout: dict, fps: str, out_dur: float,
     crossfade = tr.get("type", "crossfade") == "crossfade" and float(tr.get("duration", 0.35)) > 0
     fade_d = float(tr.get("duration", 0.35))
 
-    dur = out_dur if seconds is None else min(out_dur, float(seconds))
-    n = len(placed)
+    # Window-relative item starts; keep only items that fall inside the window.
+    rel = [(it, out - w0) for it, out in placed if w0 - 1e-6 <= out < w0 + dur]
+    n = len(rel)
 
     inputs: list[str] = []
     item_graph: list[str] = []
     labels: list[str] = []
     k = 0  # ffmpeg input index (only for items actually added)
-    for i, (it, w_start) in enumerate(placed):
+    for i, (it, w_start) in enumerate(rel):
         if w_start >= dur:
             continue
         path = ep.content_dir / it["file"]
@@ -106,7 +102,7 @@ def build_graph(ep: Episode, layout: dict, fps: str, out_dur: float,
         if gap == "background":
             seglen = item_dur
         else:  # hold — extend to the next item (last item holds to the end)
-            next_start = placed[i + 1][1] if i + 1 < n else dur
+            next_start = rel[i + 1][1] if i + 1 < n else dur
             seglen = max(0.1, next_start - w_start)
             if crossfade and i + 1 < n:
                 seglen += fade_d  # persist under the next item's fade-in
@@ -146,21 +142,20 @@ def build_graph(ep: Episode, layout: dict, fps: str, out_dur: float,
     return inputs, ";\n".join(graph) + "\n", uses_alpha
 
 
-def render_track(ep: Episode, layout: dict, fps: str, *, force: bool = False,
-                 seconds: float | None = None) -> Path | None:
-    """Render the content track, cached. Returns its path, or None if the episode
-    has no content.json / no items that land in the output."""
+def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
+                 *, force: bool = False) -> Path | None:
+    """Render the content track for the output window, cached. Returns its path,
+    or None if the episode has no content.json / no items land in the window."""
     items = load_items(ep)
     if items is None:
         return None
-    placed, out_dur = _place(items, ep)
+    placed, _out_dur = _place(items, ep)
     if not placed:
         log.warning("content: no items map into the output timeline; skipping content track")
         return None
 
-    seconds = _cap_seconds(seconds)
-    inputs, graph, uses_alpha = build_graph(ep, layout, fps, out_dur, placed, seconds=seconds)
-    dur = out_dur if seconds is None else min(out_dur, float(seconds))
+    inputs, graph, uses_alpha = build_graph(ep, layout, fps, window, placed)
+    dur = window[1]
     dry = ffmpeg.is_dry_run()
 
     stage_dir = ep.compose_dir / "content"
@@ -174,7 +169,7 @@ def render_track(ep: Episode, layout: dict, fps: str, *, force: bool = False,
         "items": item_hashes,
         "edl": cache.hash_file(ep.edl_json) if not dry else "dry",
         "fps": fps,
-        "seconds": seconds,
+        "window": [round(window[0], 3), round(window[1], 3)],
         "uses_alpha": uses_alpha,
     })
     if not force and cache.is_current(stage_dir, input_hash) and ep.content_track.exists():

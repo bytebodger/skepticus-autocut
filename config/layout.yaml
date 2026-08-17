@@ -46,6 +46,21 @@ content:
   # Fallback still shown in the content rect when there is no content.json.
   placeholder: assets/placeholder_content.png
 
+audio:                      # deterministic audio chain (spec section 7)
+  enabled: true
+  highpass: 80              # Hz — kills rumble / HVAC
+  afftdn:
+    nf: -25                 # noise floor dB — gentle broadband denoise
+  compressor:
+    threshold: -18          # dB
+    ratio: 3
+    attack: 5               # ms
+    release: 120            # ms
+  loudnorm:                 # two-pass, YouTube target
+    I: -14
+    TP: -1.5
+    LRA: 11
+
 captions:
   enabled: true
   font: Arial               # must be installed / in styles/ for the burn

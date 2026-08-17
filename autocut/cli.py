@@ -109,9 +109,9 @@ def _cmd_qc(ep, args):
 
 
 def _cmd_compose(ep, args):
-    """Phase-2 compositor, step 1: static composite for a geometry check."""
+    """Phase-2 compositor: produced show frame (background, speaker, content, captions, audio)."""
     from . import compose as compose_mod  # lazy: keeps cli importable without pyyaml
-    compose_mod.run(ep, force=args.force)
+    compose_mod.run(ep, force=args.force, preview=args.preview, render_range=args.render_range)
 
 
 def _cmd_render(ep, args):
@@ -161,7 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
         "captions": _cmd_captions,
         "composite": _cmd_composite,
         "qc": _cmd_qc,
-        "compose": _cmd_compose,
         "render": _cmd_render,
         "all": _cmd_all,
     }
@@ -169,6 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=fn.__doc__ or name)
         sp.add_argument("episode")
         sp.set_defaults(func=fn)
+
+    # compose takes preview/range options for iterating without a full render.
+    cp = sub.add_parser("compose", help=_cmd_compose.__doc__ or "compose")
+    cp.add_argument("episode")
+    cp.add_argument("--preview", action="store_true",
+                    help="fast 1080p render of a short window for iteration")
+    cp.add_argument("--range", dest="render_range", metavar="START:END",
+                    help="render only the output window START:END (seconds)")
+    cp.set_defaults(func=_cmd_compose)
 
     rp = sub.add_parser("review", help="start the review gate on localhost")
     rp.add_argument("episode")

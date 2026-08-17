@@ -155,10 +155,24 @@ def _dialogue_line(chunk: list[dict]) -> str:
     return f"Dialogue: 0,{_fmt_time(start)},{_fmt_time(end)},{STYLE_NAME},,0,0,0,,{text}"
 
 
-def build_ass(words_doc: dict, edl_doc: dict, template: str) -> str:
-    """Build a full ASS document. Pure function — unit-tested."""
+def build_ass(words_doc: dict, edl_doc: dict, template: str, *, window: tuple | None = None) -> str:
+    """Build a full ASS document. Pure function — unit-tested.
+
+    ``window`` = (start, length) in output time renders only that window, with
+    caption times shifted so the window start is 0 (so a --range/--preview clip's
+    captions line up with its shifted footage)."""
     spans = edl.build_time_map(edl_doc["segments"])
     mapped = _map_words(words_doc.get("words", []), spans)
+    if window is not None:
+        w0, length = window
+        clipped = []
+        for m in mapped:
+            if not (w0 - 1e-6 <= m["start"] < w0 + length + 1e-6):
+                continue
+            s = max(0.0, m["start"] - w0)
+            clipped.append({"word": m["word"], "start": s,
+                            "end": max(s, min(m["end"] - w0, length))})
+        mapped = clipped
     chunks = _chunk(mapped)
     dialogue = "\n".join(_dialogue_line(c) for c in chunks)
     body = template.rstrip("\n") + "\n"

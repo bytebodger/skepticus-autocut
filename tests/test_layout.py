@@ -121,19 +121,20 @@ def test_speaker_graph_keyed_when_enabled(tmp_path):
 def test_composite_graph_overlays_at_rect_origins(tmp_path):
     lay = layout_mod.load(_root(tmp_path)[0])
     g = compose._build_composite_graph(lay, shadow=None, border_idx=None,
-                                       content_prefit=False, subtitles=None)
+                                       content_prefit=False, subtitles=None, preview=False)
     assert "scale=3840:2160[bg]" in g
     assert "overlay=x=160:y=240[base]" in g      # content rect origin
     assert "overlay=x=2640:y=240[cspk]" in g     # speaker rect origin
     assert "color=0x0b0b0d" in g                  # letterbox fill normalised from #
     assert "subtitles=" not in g                  # no captions -> no burn
+    assert "[vout]" in g and "scale=1920:1080" not in g   # full res
 
 
 def test_composite_graph_prefit_content_passes_through(tmp_path):
     # A pre-fitted content track is overlaid as-is (no scale/pad in the composite).
     lay = layout_mod.load(_root(tmp_path)[0])
     g = compose._build_composite_graph(lay, shadow=None, border_idx=None,
-                                       content_prefit=True, subtitles=None)
+                                       content_prefit=True, subtitles=None, preview=False)
     assert "[1:v]null[content]" in g
     assert "force_original_aspect_ratio" not in g
 
@@ -143,11 +144,38 @@ def test_composite_graph_shadow_border_and_captions(tmp_path):
     shadow = {"opacity": 0.5, "blur": 18.0, "offset": (0, 10)}
     g = compose._build_composite_graph(lay, shadow=shadow, border_idx=3,
                                        content_prefit=False,
-                                       subtitles=("work/ep/captions.ass", "styles"))
+                                       subtitles=("work/ep/captions.ass", "styles"),
+                                       preview=False)
     assert "gblur=sigma=18.0" in g                       # shadow blur
     assert "colorchannelmixer=aa=0.5" in g               # shadow opacity
     assert "[3:v]overlay=x=2640:y=240[framed]" in g      # border, then captions on top
-    assert "subtitles=work/ep/captions.ass:fontsdir=styles[out]" in g
+    assert "subtitles=work/ep/captions.ass:fontsdir=styles[vid]" in g
+
+
+def test_composite_graph_preview_downscales(tmp_path):
+    lay = layout_mod.load(_root(tmp_path)[0])
+    g = compose._build_composite_graph(lay, shadow=None, border_idx=None,
+                                       content_prefit=False, subtitles=None, preview=True)
+    assert "scale=1920:1080:flags=lanczos[vout]" in g
+
+
+# --- window resolution ---
+
+def test_resolve_window_full_preview_range(tmp_path, monkeypatch):
+    root, ep = _root(tmp_path)
+    monkeypatch.setattr(compose, "_output_duration", lambda e: 3000.0)
+    assert compose._resolve_window(ep, preview=False, render_range=None) == (0.0, 3000.0)
+    assert compose._resolve_window(ep, preview=True, render_range=None) == (0.0, compose.PREVIEW_SECONDS)
+    assert compose._resolve_window(ep, preview=False, render_range="300:360") == (300.0, 60.0)
+    # END past the duration clamps to it
+    assert compose._resolve_window(ep, preview=False, render_range="2990:9999") == (2990.0, 10.0)
+
+
+def test_resolve_range_rejects_bad_spec(tmp_path, monkeypatch):
+    root, ep = _root(tmp_path)
+    monkeypatch.setattr(compose, "_output_duration", lambda e: 3000.0)
+    with pytest.raises(ValueError):
+        compose._resolve_window(ep, preview=False, render_range="360:300")  # start >= end
 
 
 def test_color_helpers():
