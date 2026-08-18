@@ -68,9 +68,45 @@ def canvas_size(layout: dict) -> tuple[int, int]:
     return int(layout["canvas"]["width"]), int(layout["canvas"]["height"])
 
 
+def _horizontal_origins(layout: dict) -> dict[str, int] | None:
+    """Left-edge x for the content and speaker windows, derived from
+    ``speaker.side`` — or ``None`` when both rects aren't present to derive from.
+
+    The two windows tile the canvas horizontally as
+    ``[margin | left window | gutter | right window | margin]`` sharing one
+    vertical band. Each window's width comes from its own rect; the outer margin
+    and the gutter are read from the authored rects (they are side-invariant — the
+    left margin is just the smaller of the two authored x's, and the gutter is the
+    space the author left between the windows). ``speaker.side`` alone decides
+    which window sits on the left, so flipping it swaps the two windows with no
+    overlap and no gap — the spacing and the widths are unchanged, only the order.
+    """
+    speaker, content = layout.get("speaker") or {}, layout.get("content") or {}
+    if "rect" not in speaker or "rect" not in content:
+        return None  # a partial layout (e.g. content-only) can't derive placement
+    sx, _, sw, _ = _rect(speaker["rect"], "speaker.rect")
+    cx, _, cw, _ = _rect(content["rect"], "content.rect")
+    left_margin = min(sx, cx)
+    gutter = (cx - (sx + sw)) if sx < cx else (sx - (cx + cw))
+    side = speaker.get("side", "right")
+    if side == "left":  # speaker on the left, content on the right
+        return {"speaker": left_margin, "content": left_margin + sw + gutter}
+    return {"content": left_margin, "speaker": left_margin + cw + gutter}
+
+
 def rect(layout: dict, section: str) -> tuple[int, int, int, int]:
-    """The (x, y, w, h) rect for 'speaker' or 'content', in canvas space."""
-    return _rect(layout[section]["rect"], f"{section}.rect")
+    """The (x, y, w, h) rect for 'speaker' or 'content', in canvas space.
+
+    Size (w, h) and the vertical band (y) come straight from the section's rect;
+    the horizontal origin (x) is derived from ``speaker.side`` so a single config
+    flip moves both windows together (see ``_horizontal_origins``). If the layout
+    is partial (only one of the two rects present, as when the content track is
+    built in isolation), the authored x is used as-is."""
+    x, y, w, h = _rect(layout[section]["rect"], f"{section}.rect")
+    origins = _horizontal_origins(layout)
+    if origins is not None:
+        x = origins[section]
+    return x, y, w, h
 
 
 def source_crop(layout: dict) -> tuple[int, int, int, int]:

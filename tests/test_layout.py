@@ -44,6 +44,39 @@ def test_load_and_accessors(tmp_path):
     assert layout_mod.rect(lay, "content") == (160, 240, 2400, 1680)
 
 
+def test_side_left_swaps_both_windows(tmp_path):
+    # Same authored geometry, speaker.side flipped to left: the speaker takes the
+    # left slot, content the right, derived from the one knob.
+    yaml_text = _YAML.replace("side: right", "side: left")
+    lay = layout_mod.load(_root(tmp_path, yaml_text)[0])
+    sx, sy, sw, sh = layout_mod.rect(lay, "speaker")
+    cx, cy, cw, ch = layout_mod.rect(lay, "content")
+    # widths / vertical band are untouched; only the x origins move
+    assert (sw, sh, sy) == (1080, 1680, 240)
+    assert (cw, ch, cy) == (2400, 1680, 240)
+    # speaker now on the left at the outer margin; content to its right
+    assert sx == 160
+    assert cx == 160 + sw + 80          # left_margin + speaker_w + gutter
+    # no overlap and no gap: speaker's right edge + gutter == content's left edge
+    assert cx - (sx + sw) == 80
+
+
+def test_side_flip_preserves_spacing_and_fills_canvas(tmp_path):
+    # Both orientations keep the 80px gutter and stay within the 3840 canvas with
+    # the two windows abutting the same gutter — proof the flip introduces neither
+    # overlap nor gap.
+    for side in ("right", "left"):
+        yaml_text = _YAML.replace("side: right", f"side: {side}")
+        lay = layout_mod.load(_root(tmp_path, yaml_text)[0])
+        sx, _, sw, _ = layout_mod.rect(lay, "speaker")
+        cx, _, cw, _ = layout_mod.rect(lay, "content")
+        left, right = sorted([(sx, sw), (cx, cw)])
+        assert left[0] == 160                       # left margin unchanged
+        assert right[0] - (left[0] + left[1]) == 80  # gutter unchanged
+        assert right[0] + right[1] == 3720           # right edge unchanged
+        assert (sx < cx) == (side == "left")         # speaker leads only when left
+
+
 def test_explicit_source_crop_used_verbatim(tmp_path):
     root, _ = _root(tmp_path)
     lay = layout_mod.load(root)

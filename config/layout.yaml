@@ -24,8 +24,14 @@ background:
   image: assets/backgrounds/fiery-background-4k.png
 
 speaker:
-  side: right               # left | right
-  rect: [2640, 240, 1080, 1680]     # x, y, w, h in canvas space
+  # Which side the speaker window sits on. This is the single knob for window
+  # placement: both rects' x origins derive from it (autocut.layout.rect), so
+  # flipping right<->left swaps the speaker and content windows together without
+  # overlap or gap. Speaker is on the left so my slight rightward eyeline reads as
+  # looking toward the content rather than off-screen. The x in each rect below is
+  # authored for this side; it is recomputed when the side flips.
+  side: left                # left | right
+  rect: [160, 240, 1080, 1680]      # x, y, w, h in canvas space
   # Explicit crop measured from a real frame on this rig (x offset 636), rather
   # than the centred value the spec assumes. [x, y, w, h] in source space.
   source_crop: [636, 0, 1389, 2160]
@@ -46,7 +52,9 @@ speaker:
     offset: [0, 10]         # dx, dy in canvas px
 
 content:
-  rect: [160, 240, 2400, 1680]      # x, y, w, h in canvas space
+  # x here (1320) is the right-hand slot that pairs with speaker.side: left; it is
+  # derived from speaker.side, not authored independently. w/h/y are authoritative.
+  rect: [1320, 240, 2400, 1680]     # x, y, w, h in canvas space
   fit: contain              # contain (letterbox) | cover (fill + crop)
   background: "#0b0b0d"     # letterbox fill when fit=contain
   # hold keeps the content window covered continuously: each card holds its final
@@ -63,7 +71,11 @@ content:
   placeholder: assets/placeholder_content.png
 
 audio:                      # deterministic audio chain (spec section 7)
-  enabled: true
+  # Off by default: the processed chain reads slightly muffled next to DaVinci's
+  # Audio Assistant, so audio is finished in the NLE instead. When disabled the
+  # source audio is mapped through untouched (no highpass/afftdn/compressor/
+  # loudnorm). Flip to true to re-enable the full chain below.
+  enabled: false
   highpass: 80              # Hz — kills rumble / HVAC
   afftdn:
     nf: -25                 # noise floor dB — gentle broadband denoise

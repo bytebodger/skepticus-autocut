@@ -314,16 +314,21 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
             next_idx += 1
             inputs += ["-loop", "1", "-i", border_png]
 
-    # Audio: map the output-timeline speech (the speaker source's audio) through
-    # the chain, with two-pass loudnorm. Previously the composite had no audio.
+    # Audio: always map the output-window speech (the speaker source's audio). With
+    # audio.enabled it runs the deterministic chain (highpass -> denoise ->
+    # compressor -> two-pass loudnorm); with it off (the default) the source audio
+    # passes through untouched — mapped straight in, no filter — so finishing can be
+    # done in the NLE. Either way the composite has audio.
     audio_cfg = layout.get("audio") or {}
+    audio_enabled = bool(audio_cfg.get("enabled", False))
     audio_src = _speaker_source(ep)
+    aud_idx = next_idx
+    next_idx += 1
+    inputs += ["-ss", f"{w0:.3f}", "-t", f"{length:.3f}", "-i", str(audio_src)]
     audio_af = None
-    if audio_cfg.get("enabled", True):
+    if audio_enabled:
         measured = None if dry else audio_mod.analyze(ep, str(audio_src), window, audio_cfg)
         audio_af = audio_mod.final_af(audio_cfg, measured)
-        aud_idx = next_idx
-        inputs += ["-ss", f"{w0:.3f}", "-t", f"{length:.3f}", "-i", str(audio_src)]
 
     # Captions: generate the ASS and burn it in-graph. Disabled -> no subtitles
     # filter at all (no empty track). The subtitles path must be relative and
@@ -353,6 +358,7 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
         "shadow": shadow,
         "captions": ass_text,
         "audio": audio_af,
+        "audio_enabled": audio_enabled,
         "fps": fps,
         "window": [round(w0, 3), round(length, 3)],
         "preview": preview,
@@ -366,19 +372,27 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
     ep.compose_filter_script.write_text(graph, encoding="utf-8")
     log.info("compose: compositing (shadow=%s border=%s captions=%s audio=%s preview=%s) -> %s",
              bool(shadow), border_idx is not None, subtitles is not None,
-             audio_af is not None, preview, ep.compose_output)
-    maps = ["-map", "[vout]"] + (["-map", "[aout]"] if audio_af is not None else ["-an"])
+             "chain" if audio_enabled else "passthrough", preview, ep.compose_output)
+    # Processed audio comes out of the filter graph as [aout]; passthrough maps the
+    # source's audio stream straight in. loudnorm resamples to 192k internally, so
+    # restore 48k for delivery when the chain ran; passthrough keeps the source rate
+    # so the audio is genuinely untouched.
+    if audio_af is not None:
+        audio_map = ["-map", "[aout]"]
+        audio_out = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    else:
+        audio_map = ["-map", f"{aud_idx}:a:0"]
+        audio_out = ["-c:a", "aac", "-b:a", "192k"]
     ffmpeg.run_ffmpeg(
         [
             *inputs,
             "-/filter_complex", ep.compose_filter_script,
-            *maps,
+            "-map", "[vout]", *audio_map,
             "-t", f"{length:.3f}",
             "-r", fps,
             "-c:v", "libx264", "-preset", "veryfast",
             "-crf", PREVIEW_CRF if preview else COMPOSITE_CRF, "-pix_fmt", "yuv420p",
-            # loudnorm resamples to 192k internally; bring it back to 48k for delivery.
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            *audio_out,
             "-movflags", "+faststart",
             ep.compose_output,
         ],
