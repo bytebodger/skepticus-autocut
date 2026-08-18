@@ -134,6 +134,45 @@ class Episode:
         """Composited show frame (full duration, or a --preview/--range window)."""
         return self.compose_dir / "composite.mp4"
 
+    # --- reaction format (reaction spec) ---
+    @property
+    def source_video(self) -> Path:
+        """The clean source video being reacted to. Convention: a sibling of the
+        host drop named ``<episode_id>_source.<ext>`` (reaction spec section 5/9).
+        A ``--source`` CLI override wins; this is the default lookup."""
+        for ext in (".mp4", ".mkv", ".mov", ".webm", ".MP4", ".MKV", ".MOV"):
+            candidate = self.inbox / f"{self.episode_id}_source{ext}"
+            if candidate.exists():
+                return candidate
+        return self.inbox / f"{self.episode_id}_source.mp4"
+
+    @property
+    def align_dir(self) -> Path:
+        """Work area for the reaction alignment stage."""
+        return self.work / "align"
+
+    @property
+    def source_speech_wav(self) -> Path:
+        """16kHz mono speech audio extracted from the source, for transcription
+        and cross-correlation (mirrors the host's speech.wav)."""
+        return self.align_dir / "source_speech.wav"
+
+    @property
+    def source_words_json(self) -> Path:
+        """Word-level transcript of the source file (its own words, no bleed)."""
+        return self.align_dir / "source_words.json"
+
+    @property
+    def playback_json(self) -> Path:
+        """The playback segment map: host<->source spans per play (reaction spec
+        section 5). Authored by the align stage, consumed downstream."""
+        return self.work / "playback.json"
+
+    @property
+    def align_check_dir(self) -> Path:
+        """Rendered 2s lip-sync verification clips, one per playback segment."""
+        return self.align_dir / "check"
+
     @property
     def content_dir(self) -> Path:
         """Drop folder for b-roll images/clips + content.json (spec section 4)."""

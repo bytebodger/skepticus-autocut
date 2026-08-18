@@ -114,6 +114,18 @@ def _cmd_compose(ep, args):
     compose_mod.run(ep, force=args.force, preview=args.preview, render_range=args.render_range)
 
 
+def _cmd_align(ep, args):
+    """Reaction format: align host<->source and write playback.json (spec steps 1-2)."""
+    from . import align as align_mod  # lazy: keeps cli importable without numpy
+    align_mod.run(ep, source=args.source, force=args.force)
+
+
+def _cmd_align_check(ep, args):
+    """Reaction format: render 2s lip-sync verification clips per playback segment."""
+    from . import align as align_mod  # lazy: keeps cli importable without numpy
+    align_mod.render_checks(ep, seconds=args.seconds, force=args.force)
+
+
 def _cmd_shotlist(ep, args):
     """Phase-3 visuals: author shotlist.json from the transcript (words.json)."""
     from . import shotlist as shotlist_mod  # lazy: keeps cli importable without pyyaml
@@ -205,6 +217,19 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--range", dest="render_range", metavar="START:END",
                     help="render only the output window START:END (seconds)")
     cp.set_defaults(func=_cmd_compose)
+
+    # Reaction format: align (playback.json) and align-check (lip-sync clips).
+    al = sub.add_parser("align", help=_cmd_align.__doc__ or "align")
+    al.add_argument("episode")
+    al.add_argument("--source", default=None,
+                    help="source video path (default: inbox/<episode>_source.<ext>)")
+    al.set_defaults(func=_cmd_align)
+
+    ac = sub.add_parser("align-check", help=_cmd_align_check.__doc__ or "align-check")
+    ac.add_argument("episode")
+    ac.add_argument("--seconds", type=float, default=2.0,
+                    help="length of each verification clip (default: 2)")
+    ac.set_defaults(func=_cmd_align_check)
 
     rp = sub.add_parser("review", help="start the review gate on localhost")
     rp.add_argument("episode")

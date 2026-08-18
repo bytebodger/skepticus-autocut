@@ -195,7 +195,14 @@ def _isolated_chunks(audio, model, beam_size: int) -> list[dict]:
     return out
 
 
-def _transcribe_words(ep: Episode) -> dict:
+def _run_whisper(speech_wav) -> dict:
+    """Transcribe a 16kHz mono wav into a words doc (words + isolated sidecar).
+
+    The reusable core of the transcribe stage: no caching, no silence pass. The
+    host stage calls it on ``ep.speech_wav``; the reaction align stage calls it
+    (via ``transcribe_wav``) on the source file's audio, which needs the same
+    source-timeline word timestamps but none of the episode-level machinery.
+    """
     # Imported lazily so the rest of the CLI works without CUDA/torch present.
     _add_cuda_dll_dirs()
     from faster_whisper import WhisperModel, decode_audio
@@ -215,7 +222,7 @@ def _transcribe_words(ep: Episode) -> dict:
     # Transcribing the whole file avoids the remap entirely. We do NOT drop words
     # against VAD (that deleted real speech in near-silence); Whisper's own
     # no-speech handling plus condition_on_previous_text=False keep silence quiet.
-    audio = decode_audio(str(ep.speech_wav), sampling_rate=VAD_SAMPLE_RATE)
+    audio = decode_audio(str(speech_wav), sampling_rate=VAD_SAMPLE_RATE)
     segments, info = model.transcribe(
         audio,
         word_timestamps=True,
@@ -253,6 +260,17 @@ def _transcribe_words(ep: Episode) -> dict:
         # retake detector reads this; captions ignore it.
         "isolated": isolated,
     }
+
+
+def _transcribe_words(ep: Episode) -> dict:
+    """Transcribe the host episode's speech audio (the transcribe stage core)."""
+    return _run_whisper(ep.speech_wav)
+
+
+def transcribe_wav(speech_wav) -> dict:
+    """Public entry for transcribing an arbitrary 16kHz mono wav — used by the
+    reaction align stage to transcribe the source file's clean audio."""
+    return _run_whisper(speech_wav)
 
 
 def _speech_duration(ep: Episode, words: dict) -> float:
