@@ -15,7 +15,7 @@ background: {image: assets/bg.png}
 speaker:
   side: right
   rect: [2640, 240, 1080, 1680]
-  source_crop: [636, 0, 1389, 2160]
+  source_crop: [736, 0, 1389, 2160]
   key: {color: "0x00b140", similarity: 0.12, blend: 0.05, despill: true}
 content:
   rect: [160, 240, 2400, 1680]
@@ -80,11 +80,11 @@ def test_side_flip_preserves_spacing_and_fills_canvas(tmp_path):
 def test_explicit_source_crop_used_verbatim(tmp_path):
     root, _ = _root(tmp_path)
     lay = layout_mod.load(root)
-    assert layout_mod.source_crop(lay) == (636, 0, 1389, 2160)
+    assert layout_mod.source_crop(lay) == (736, 0, 1389, 2160)
 
 
 def test_auto_source_crop_centres_strip(tmp_path):
-    yaml_text = _YAML.replace("source_crop: [636, 0, 1389, 2160]", "source_crop: auto")
+    yaml_text = _YAML.replace("source_crop: [736, 0, 1389, 2160]", "source_crop: auto")
     root, _ = _root(tmp_path, yaml_text)
     lay = layout_mod.load(root)
     x, y, w, h = layout_mod.source_crop(lay)
@@ -128,7 +128,7 @@ def test_speaker_graph_no_key_crops_scales_alphamerges(tmp_path):
     # Default rig: key disabled (black backdrop) -> crop -> scale -> mask.
     lay = layout_mod.load(_root(tmp_path)[0])
     g = compose._build_speaker_graph(lay, use_mask=True)
-    assert "crop=1389:2160:636:0" in g          # explicit source_crop
+    assert "crop=1389:2160:736:0" in g          # explicit source_crop
     assert "chromakey" not in g and "despill" not in g
     assert g.index("crop=") < g.index("scale=1080:1680")
     assert "alphamerge[spk]" in g               # rounded-corner mask applied
@@ -149,6 +149,31 @@ def test_speaker_graph_keyed_when_enabled(tmp_path):
     assert g.index("crop=") < g.index("chromakey=0x00b140:0.12:0.05") < g.index("scale=1080:1680")
     assert "despill=type=green" in g
     assert "blend=all_mode=multiply" in g       # keyed alpha combined with mask
+
+
+def test_speaker_graph_uses_a_custom_video_label_and_mask_index(tmp_path):
+    # The speaker layer now reads from a concatenated kept-EDL-span stream,
+    # not always input 0 — video_label/mask_idx must be honoured throughout.
+    lay = layout_mod.load(_root(tmp_path)[0])
+    g = compose._build_speaker_graph(lay, use_mask=True, video_label="hostraw", mask_idx=3)
+    assert "[hostraw]crop=" in g
+    assert "[0:v]" not in g
+    assert "[3:v]alphamerge[spk]" in g
+
+
+def test_host_video_concat_lines_single_span_is_passthrough():
+    lines = compose._host_video_concat_lines([(2.083, 45.833)])
+    assert lines == ["[0:v]setpts=PTS-STARTPTS[hv0]", "[hv0]null[hostraw]"]
+
+
+def test_host_video_concat_lines_multiple_spans_concat_in_order():
+    lines = compose._host_video_concat_lines([(2.083, 45.833), (46.458, 46.667), (49.333, 101.917)])
+    assert lines[:3] == [
+        "[0:v]setpts=PTS-STARTPTS[hv0]",
+        "[1:v]setpts=PTS-STARTPTS[hv1]",
+        "[2:v]setpts=PTS-STARTPTS[hv2]",
+    ]
+    assert lines[3] == "[hv0][hv1][hv2]concat=n=3:v=1:a=0[hostraw]"
 
 
 def test_composite_graph_overlays_at_rect_origins(tmp_path):

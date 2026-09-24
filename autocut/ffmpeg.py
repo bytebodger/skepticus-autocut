@@ -119,6 +119,21 @@ def run_ffmpeg_capture_stderr(args: Sequence[str]) -> str:
     return proc.stderr or ""
 
 
+def run_ffmpeg_capture_stdout_bytes(args: Sequence[str]) -> bytes:
+    """Run ffmpeg where the useful output is raw bytes on stdout (e.g. decoding
+    audio to a raw PCM pipe for verification — see the reaction spec's
+    lip-sync/level checks). Always runs for real, even under --dry-run: this is
+    read-only analysis of already-rendered output, not an encode, matching
+    ``ffprobe_json``'s rationale.
+    """
+    cmd = [ffmpeg_path(), "-hide_banner", "-nostats", "-loglevel", "error", *map(str, args)]
+    log.info("run: %s", " ".join(cmd))
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise FFmpegError(cmd, proc.returncode, (proc.stderr or b"").decode("utf-8", errors="replace"))
+    return proc.stdout or b""
+
+
 def ffprobe_json(args: Sequence[str]) -> dict:
     """Run ffprobe with ``-of json`` and parse stdout.
 

@@ -48,14 +48,91 @@ def _content_source(ep: Episode) -> tuple[Path, Path] | tuple[None, None]:
     return None, None
 
 
-def load_items(ep: Episode) -> tuple[list[dict], Path] | tuple[None, None]:
+PREROLL_DURATION = 0.1  # real-decode span before hold takes over freezing frame 1
+
+
+def _thumb_path(ep: Episode, layout: dict | None) -> Path | None:
+    """The thumbnail to show during opening commentary (reaction spec): an
+    explicit ``reaction.thumbnail`` config path (relative to the repo root)
+    if set and present, else the auto-detected ``inbox/<ep>_thumb.<ext>``,
+    else ``None`` (caller falls back to the frozen first frame)."""
+    override = ((layout or {}).get("reaction") or {}).get("thumbnail")
+    if override:
+        path = ep.root / override
+        if path.exists():
+            return path
+        log.warning("reaction: configured thumbnail %s not found; falling back", path)
+    return ep.source_thumb
+
+
+def _reaction_items(ep: Episode, layout: dict | None = None) -> tuple[list[dict], Path] | None:
+    """Content items synthesized from the reaction alignment map (reaction spec
+    section 7): one video item per playback segment, in host (source) time,
+    seeking into the source file at ``clip_in``. The gaps *between* segments —
+    commentary — are left to ``gap_behavior: hold`` (the default), which holds
+    the previous item's last frame: a held frame of the source, frozen where
+    playback stopped.
+
+    The recording opens in commentary (spec §2), so there is no "previous
+    item" for hold mode to hold before the first cue — without an explicit
+    item there, the content window would show nothing at all for that leading
+    span. A pre-roll item covers it, held until the first playback segment
+    actually starts (with a crossfade into it, same as any other item
+    boundary). Placed at the EDL's first kept instant rather than hardcoded
+    host time 0 — true 0 is typically inside the leading-dead-air drop
+    autoauthor trims, which would silently drop the item entirely
+    (spec-consistent: dead air never survives into output either, so nothing
+    is actually lost by anchoring to the first live moment instead).
+
+    The pre-roll item is the source's YouTube thumbnail when one is
+    available (``_thumb_path``), else the source's own frame 1 (``clip_in:
+    0``) — the prior, thumbnail-less convention.
+    """
+    if not ep.playback_json.exists():
+        return None
+    playback = json.loads(ep.playback_json.read_text(encoding="utf-8"))
+    segments = playback.get("segments", [])
+    if not segments:
+        return None
+    file = playback["source_file"]
+    preroll_time = 0.0
+    if ep.edl_json.exists():
+        edl_doc = edl.load(ep.edl_json)
+        first_keep = next((s for s in edl_doc.get("segments", []) if s.get("action") == "keep"), None)
+        if first_keep is not None:
+            preroll_time = float(first_keep["in"])
+    thumb = _thumb_path(ep, layout)
+    if thumb is not None:
+        preroll_item = {"file": str(thumb), "source_time": preroll_time, "duration": PREROLL_DURATION}
+    else:
+        preroll_item = {"file": file, "source_time": preroll_time, "duration": PREROLL_DURATION, "clip_in": 0.0}
+    items = [preroll_item]
+    items += [
+        {
+            "file": file,
+            "source_time": s["host_in"],
+            "duration": s["host_out"] - s["host_in"],
+            "clip_in": s["source_in"],
+        }
+        for s in segments
+    ]
+    # file is an absolute path (as align.run writes it), so the base dir is
+    # irrelevant to path resolution — ep.root is just a harmless placeholder.
+    return items, ep.root
+
+
+def load_items(ep: Episode, layout: dict | None = None) -> tuple[list[dict], Path] | tuple[None, None]:
     """(items, base_dir) from the chosen content.json, or (None, None) if the
-    episode has no content source."""
+    episode has no content source. ``layout`` is only consulted for the
+    reaction-format fallback (``reaction.thumbnail`` override)."""
     src, base = _content_source(ep)
-    if src is None:
-        return None, None
-    data = json.loads(src.read_text(encoding="utf-8"))
-    return list(data.get("items") or []), base
+    if src is not None:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        return list(data.get("items") or []), base
+    reaction = _reaction_items(ep, layout)
+    if reaction is not None:
+        return reaction
+    return None, None
 
 
 def _place(items: list[dict], ep: Episode) -> tuple[list[tuple[dict, float]], float]:
@@ -131,7 +208,16 @@ def build_graph(ep: Episode, layout: dict, fps: str, window: tuple,
         if is_image:
             inputs += ["-loop", "1", "-t", f"{seglen:.3f}", "-i", str(path)]
         else:
-            inputs += ["-t", f"{seglen:.3f}", "-i", str(path)]
+            clip_in = it.get("clip_in")
+            if clip_in is not None:
+                inputs += ["-ss", f"{float(clip_in):.3f}"]
+            # Cap the input read at the item's OWN duration, not the (possibly
+            # hold-extended) seglen: a reaction item's file is the full source
+            # video, not a pre-trimmed card, so reading straight through to
+            # seglen would keep playing real source content past clip_out
+            # instead of freezing there. The tpad/trim below extend the frozen
+            # last frame across the rest of seglen.
+            inputs += ["-t", f"{item_dur:.3f}", "-i", str(path)]
 
         chain = [_fit_filter(cw, ch, fit, fill), "format=yuva420p"]
         if gap != "background" and not is_image:
@@ -174,7 +260,7 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
                  *, force: bool = False) -> Path | None:
     """Render the content track for the output window, cached. Returns its path,
     or None if the episode has no content.json / no items land in the window."""
-    items, base_dir = load_items(ep)
+    items, base_dir = load_items(ep, layout)
     if items is None:
         return None
     placed, _out_dur = _place(items, ep)
@@ -185,6 +271,14 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
     inputs, graph, uses_alpha = build_graph(ep, layout, fps, window, placed, base_dir)
     dur = window[1]
     dry = ffmpeg.is_dry_run()
+    # clip_in marks an item as a chunk seeked out of a larger source file (reaction
+    # spec section 7) — real, full-motion footage rather than a small pre-rendered
+    # card. qtrle is cheap on the flat/mostly-static cards it was chosen for, but
+    # balloons on full motion; ProRes 4444 (already used for the speaker layer)
+    # handles motion properly at a real cost/quality tradeoff. One codec per track
+    # (ffmpeg can't mix codecs within one output stream), so the choice covers the
+    # whole track if anything in it needs motion handling.
+    has_motion_source = any(it.get("clip_in") is not None for it, _ in placed)
 
     stage_dir = ep.compose_dir / "content"
     item_hashes = {
@@ -199,6 +293,7 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
         "fps": fps,
         "window": [round(window[0], 3), round(window[1], 3)],
         "uses_alpha": uses_alpha,
+        "has_motion_source": has_motion_source,
     })
     if not force and cache.is_current(stage_dir, input_hash) and ep.content_track.exists():
         log.info("content: track cache hit")
@@ -206,11 +301,14 @@ def render_track(ep: Episode, layout: dict, fps: str, window: tuple,
 
     ep.compose_dir.mkdir(parents=True, exist_ok=True)
     ep.content_filter_script.write_text(graph, encoding="utf-8")
-    if uses_alpha:
+    if uses_alpha and has_motion_source:
+        vcodec = ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le"]
+    elif uses_alpha:
         vcodec = ["-c:v", "qtrle"]  # lossless alpha, cheap on flat/transparent regions
     else:
         vcodec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
-    log.info("content: %d item(s) -> %s (%.1fs, alpha=%s)", len(placed), ep.content_track, dur, uses_alpha)
+    log.info("content: %d item(s) -> %s (%.1fs, alpha=%s, codec=%s)",
+             len(placed), ep.content_track, dur, uses_alpha, vcodec[1])
     ffmpeg.run_ffmpeg([
         *inputs,
         "-/filter_complex", ep.content_filter_script,

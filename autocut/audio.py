@@ -72,9 +72,22 @@ _MEASURED_KEYS = ("input_i", "input_tp", "input_lra", "input_thresh", "target_of
 
 
 def analyze(ep: Episode, source: str, window: tuple, cfg: dict) -> dict | None:
-    """Run the loudnorm analysis pass over the output window and return the
-    measured stats, or None if they can't be parsed / are degenerate (silence),
-    in which case the caller should fall back to single-pass."""
+    """Run the loudnorm analysis pass over ``window`` — ``(start, length)`` in
+    ``source``'s OWN timebase — and return the measured stats, or None if
+    they can't be parsed / are degenerate (silence), in which case the caller
+    should fall back to single-pass.
+
+    This function is timebase-agnostic: it just seeks ``source`` to
+    ``window``. The caller is responsible for making them match. If
+    ``source`` is raw/uncut host media, ``window`` must be SOURCE time (e.g.
+    a kept EDL span's own in/out) — NOT an output-time compose window, unless
+    ``source`` is itself an already-cut/already-windowed file whose own clock
+    starts at 0. Passing an output-time window against raw media has caused
+    this bug twice (compose.py's speaker layer, audiotrack.py's host bed) —
+    both silently measured/played the wrong moment of the recording. Prefer
+    passing an already-correctly-windowed file, or a source-time span, over
+    a raw file + output-time window.
+    """
     w0, length = window
     stderr = ffmpeg.run_ffmpeg_capture_stderr([
         "-ss", f"{w0:.3f}", "-t", f"{length:.3f}", "-i", source,

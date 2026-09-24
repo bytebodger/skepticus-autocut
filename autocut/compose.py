@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import (
     audio as audio_mod,
+    audiotrack as audiotrack_mod,
     cache,
     captions as captions_mod,
     content as content_mod,
@@ -54,16 +55,29 @@ def _color_rgb(value: str) -> tuple[int, int, int]:
     return int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16)
 
 
-def _speaker_source(ep: Episode) -> Path:
-    """Per spec the speaker comes from cut.mkv; fall back to the mezzanine so the
-    geometry can be checked before a cut exists."""
-    if ep.cut.exists():
-        return ep.cut
+def _host_av_source(ep: Episode) -> Path:
+    """The raw host media the speaker layer and (for a monologue episode) the
+    audio track are built from. Same preference as align.py/audiotrack.py's
+    own copy of this: the mezzanine shares the source/word timeline; the raw
+    drop is the last resort.
+
+    Deliberately NOT ``ep.cut``: a naive ``-ss <output window start>`` seek
+    into raw media is only correct before the first EDL drop — every prior
+    drop shifts output time and source time apart, and reading the raw file
+    at the wrong position is exactly the bug an earlier version of this
+    function's ``cut.mkv``-or-mezzanine fallback made invisible (it produced
+    a plausible-looking result from the wrong moment of the recording, no
+    error, nothing to notice). Both callers below read this via
+    ``edl.windowed_keep_spans`` + a filter-graph concat instead, which is
+    correct for any window — cut.mkv is no longer needed for either.
+    """
     if ep.mezz.exists():
         return ep.mezz
+    if ep.raw.exists():
+        return ep.raw
     raise FileNotFoundError(
-        f"No speaker source: neither {ep.cut} nor {ep.mezz} exists. "
-        f"Run 'autocut probe {ep.episode_id}' (and ideally 'cut') first."
+        f"No host media (neither {ep.mezz} nor {ep.raw} exists). "
+        f"Run 'autocut probe {ep.episode_id}' first."
     )
 
 
@@ -111,7 +125,8 @@ def _generate_border(ep: Episode, w: int, h: int, r: int, bw: int, rgb: tuple[in
 # Filter graphs
 # --------------------------------------------------------------------------- #
 
-def _build_speaker_graph(layout: dict, *, use_mask: bool) -> str:
+def _build_speaker_graph(layout: dict, *, use_mask: bool, video_label: str = "0:v",
+                         mask_idx: int = 1) -> str:
     cx, cy, cw, ch = layout_mod.source_crop(layout)
     _, _, rw, rh = layout_mod.rect(layout, "speaker")
     key = layout["speaker"]["key"]
@@ -124,20 +139,20 @@ def _build_speaker_graph(layout: dict, *, use_mask: bool) -> str:
         if key.get("despill", True):
             chain.append("despill=type=green")
         chain.append(scale)
-        base = f"[0:v]{','.join(chain)}"
+        base = f"[{video_label}]{','.join(chain)}"
         if not use_mask:
             return f"{base}[spk]\n"
         # Multiply the keyed alpha by the rounded-corner mask so both apply.
         return (f"{base}[keyed];\n"
                 f"[keyed]alphaextract[ka];\n"
-                f"[ka][1:v]blend=all_mode=multiply[cmb];\n"
+                f"[ka][{mask_idx}:v]blend=all_mode=multiply[cmb];\n"
                 f"[keyed][cmb]alphamerge[spk]\n")
 
     # No key — black backdrop. crop -> scale, alpha comes only from the mask.
-    base = f"[0:v]crop={cw}:{ch}:{cx}:{cy},{scale}"
+    base = f"[{video_label}]crop={cw}:{ch}:{cx}:{cy},{scale}"
     if not use_mask:
         return f"{base}[spk]\n"
-    return f"{base}[scaled];\n[scaled][1:v]alphamerge[spk]\n"
+    return f"{base}[scaled];\n[scaled][{mask_idx}:v]alphamerge[spk]\n"
 
 
 def _build_captions(ep: Episode, layout: dict, window: tuple) -> str | None:
@@ -220,17 +235,54 @@ def _build_composite_graph(layout: dict, *, shadow: dict | None, border_idx: int
 # Stages
 # --------------------------------------------------------------------------- #
 
+def _host_video_concat_lines(keep_spans: list[tuple[float, float]], *, out_label: str = "hostraw") -> list[str]:
+    """Filter-graph lines that concatenate ``keep_spans`` — ffmpeg inputs
+    ``[0:v]..[len(keep_spans)-1:v]``, in order — into one continuous,
+    PTS-normalised video stream matching output time. Video splices are a
+    hard cut here, no crossfade — matches cut.py's own convention, where only
+    audio gets a fade (a visual jump-cut doesn't click)."""
+    lines: list[str] = []
+    labels = []
+    for i in range(len(keep_spans)):
+        label = f"hv{i}"
+        lines.append(f"[{i}:v]setpts=PTS-STARTPTS[{label}]")
+        labels.append(label)
+    if len(labels) == 1:
+        lines.append(f"[{labels[0]}]null[{out_label}]")
+    else:
+        lines.append(f"{''.join(f'[{l}]' for l in labels)}concat=n={len(labels)}:v=1:a=0[{out_label}]")
+    return lines
+
+
 def _render_speaker(ep: Episode, layout: dict, fps: str, window: tuple, *, force: bool) -> None:
     stage_dir = ep.compose_dir / "speaker"
-    src = _speaker_source(ep)
+    host_av = _host_av_source(ep)
     w0, length = window
     _, _, rw, rh = layout_mod.rect(layout, "speaker")
     r = int(layout["speaker"].get("corner_radius", 0))
     key = layout["speaker"]["key"]
     use_mask = r > 0
-    graph = _build_speaker_graph(layout, use_mask=use_mask)
+
+    edl_doc = edl.load(ep.edl_json)
+    spans = edl.build_time_map(edl_doc["segments"])
+    keep_spans = edl.windowed_keep_spans(spans, window)
+    if not keep_spans:
+        raise RuntimeError(
+            f"compose: no kept EDL segments overlap the requested window "
+            f"[{w0:.1f}s..{w0 + length:.1f}s] — the speaker layer would be empty."
+        )
+
+    # Concatenate the kept EDL spans (source time) into one output-time-
+    # continuous stream before the existing crop/key/mask chain, instead of a
+    # single naive seek into raw media (see _host_av_source).
+    concat_lines = _host_video_concat_lines(keep_spans)
+    mask_idx = len(keep_spans)  # mask input now follows the keep-span inputs, not always index 1
+    speaker_graph = _build_speaker_graph(layout, use_mask=use_mask, video_label="hostraw", mask_idx=mask_idx)
+    graph = ";\n".join(concat_lines) + ";\n" + speaker_graph
+
     input_hash = cache.hash_inputs({
-        "source": cache.hash_file(src) if (src.exists() and not ffmpeg.is_dry_run()) else "dry",
+        "host": cache.hash_file(host_av) if (host_av.exists() and not ffmpeg.is_dry_run()) else "dry",
+        "keep_spans": [[round(s, 3), round(e, 3)] for s, e in keep_spans],
         "graph": graph,
         "fps": fps,
         "window": [round(w0, 3), round(length, 3)],
@@ -243,15 +295,16 @@ def _render_speaker(ep: Episode, layout: dict, fps: str, window: tuple, *, force
         return
 
     ep.compose_dir.mkdir(parents=True, exist_ok=True)
-    # Seek the (all-intra) source to the window start; the layer's clock is 0..length.
-    inputs = ["-ss", f"{w0:.3f}", "-i", src]
+    inputs: list[str] = []
+    for s_in, s_out in keep_spans:
+        inputs += ["-ss", f"{s_in:.3f}", "-to", f"{s_out:.3f}", "-i", str(host_av)]
     if use_mask:
         mask = _generate_mask(ep, rw, rh, r)
         inputs += ["-loop", "1", "-i", mask]     # single image, repeated per frame
     ep.speaker_filter_script.write_text(graph, encoding="utf-8")
     keyed = "keyed" if key.get("enabled", False) else "black backdrop, no key"
-    log.info("compose: speaker layer (%s, r=%d) from %s [%.1fs..%.1fs] -> %s",
-             keyed, r, src.name, w0, w0 + length, ep.speaker_layer)
+    log.info("compose: speaker layer (%s, r=%d) from %d kept span(s) of %s [%.1fs..%.1fs] -> %s",
+             keyed, r, len(keep_spans), host_av.name, w0, w0 + length, ep.speaker_layer)
     ffmpeg.run_ffmpeg([
         *inputs,
         "-/filter_complex", ep.speaker_filter_script,
@@ -314,20 +367,50 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
             next_idx += 1
             inputs += ["-loop", "1", "-i", border_png]
 
-    # Audio: always map the output-window speech (the speaker source's audio). With
-    # audio.enabled it runs the deterministic chain (highpass -> denoise ->
-    # compressor -> two-pass loudnorm); with it off (the default) the source audio
-    # passes through untouched — mapped straight in, no filter — so finishing can be
-    # done in the NLE. Either way the composite has audio.
+    # Audio: for a reaction episode, the switched/crossfaded/level-matched track
+    # (reaction spec section 8) — already trimmed to this exact window. Otherwise
+    # the host recording's own kept-EDL-span audio for the window (concatenated,
+    # same fix as the speaker layer — a naive seek into raw media only matches
+    # output time before the first EDL drop). Either way it lands on the named
+    # pad [audiobed]. With audio.enabled it then runs the deterministic chain
+    # (highpass -> denoise -> compressor -> two-pass loudnorm); with it off (the
+    # default) it passes through untouched — mapped straight in, no filter — so
+    # finishing can be done in the NLE.
     audio_cfg = layout.get("audio") or {}
     audio_enabled = bool(audio_cfg.get("enabled", False))
-    audio_src = _speaker_source(ep)
+    reaction_track = audiotrack_mod.render_track(ep, window, force=force)
+    is_reaction_audio = reaction_track is not None
     aud_idx = next_idx
-    next_idx += 1
-    inputs += ["-ss", f"{w0:.3f}", "-t", f"{length:.3f}", "-i", str(audio_src)]
+    audio_graph_lines: list[str]
+    audio_src_for_hash: Path
+
+    if is_reaction_audio:
+        inputs += ["-i", str(reaction_track)]
+        next_idx += 1
+        audio_graph_lines = [f"[{aud_idx}:a]anull[audiobed]"]
+        measure_source, measure_window = str(reaction_track), (0.0, length)
+        audio_src_for_hash = reaction_track
+    else:
+        host_av = _host_av_source(ep)
+        audio_spans = edl.build_time_map(edl.load(ep.edl_json)["segments"])
+        keep_spans_t = edl.windowed_keep_spans(audio_spans, window)
+        if not keep_spans_t:
+            raise RuntimeError(
+                f"compose: no kept EDL segments overlap the requested window "
+                f"[{w0:.1f}s..{w0 + length:.1f}s] — there is no audio to mix."
+            )
+        for s_in, s_out in keep_spans_t:
+            inputs += audiotrack_mod.host_audio_input_args(host_av, s_in, s_out)
+        next_idx += len(keep_spans_t)
+        audio_graph_lines, _ = audiotrack_mod.host_bed_filter_lines(
+            [{"source_in": s, "source_out": e} for s, e in keep_spans_t], out_label="audiobed")
+        first_s, first_e = keep_spans_t[0]
+        measure_source, measure_window = str(host_av), (first_s, first_e - first_s)
+        audio_src_for_hash = host_av
+
     audio_af = None
     if audio_enabled:
-        measured = None if dry else audio_mod.analyze(ep, str(audio_src), window, audio_cfg)
+        measured = None if dry else audio_mod.analyze(ep, measure_source, measure_window, audio_cfg)
         audio_af = audio_mod.final_af(audio_cfg, measured)
 
     # Captions: generate the ASS and burn it in-graph. Disabled -> no subtitles
@@ -345,8 +428,11 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
     graph = _build_composite_graph(layout, shadow=shadow, border_idx=border_idx,
                                    content_prefit=content_prefit, subtitles=subtitles,
                                    preview=preview)
+    graph = graph.rstrip("\n") + ";\n" + ";\n".join(audio_graph_lines)
     if audio_af is not None:
-        graph = graph.rstrip("\n") + f";\n[{aud_idx}:a]{audio_af}[aout]\n"
+        graph = graph.rstrip("\n") + f";\n[audiobed]{audio_af}[aout]\n"
+    else:
+        graph += "\n"
 
     input_hash = cache.hash_inputs({
         "speaker": cache.hash_file(ep.speaker_layer) if (ep.speaker_layer.exists() and not dry) else "dry",
@@ -359,6 +445,7 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
         "captions": ass_text,
         "audio": audio_af,
         "audio_enabled": audio_enabled,
+        "audio_src": cache.hash_file(audio_src_for_hash) if (audio_src_for_hash.exists() and not dry) else "dry",
         "fps": fps,
         "window": [round(w0, 3), round(length, 3)],
         "preview": preview,
@@ -370,18 +457,19 @@ def _render_composite(ep: Episode, layout: dict, fps: str, window: tuple, *,
 
     ep.compose_dir.mkdir(parents=True, exist_ok=True)
     ep.compose_filter_script.write_text(graph, encoding="utf-8")
-    log.info("compose: compositing (shadow=%s border=%s captions=%s audio=%s preview=%s) -> %s",
+    log.info("compose: compositing (shadow=%s border=%s captions=%s audio=%s/%s preview=%s) -> %s",
              bool(shadow), border_idx is not None, subtitles is not None,
+             "reaction" if is_reaction_audio else "speaker",
              "chain" if audio_enabled else "passthrough", preview, ep.compose_output)
-    # Processed audio comes out of the filter graph as [aout]; passthrough maps the
-    # source's audio stream straight in. loudnorm resamples to 192k internally, so
-    # restore 48k for delivery when the chain ran; passthrough keeps the source rate
-    # so the audio is genuinely untouched.
+    # Processed audio comes out of the filter graph as [aout]; passthrough maps
+    # the concatenated host-bed pad straight in. loudnorm resamples to 192k
+    # internally, so restore 48k for delivery when the chain ran; passthrough
+    # keeps the source rate so the audio is genuinely untouched.
     if audio_af is not None:
         audio_map = ["-map", "[aout]"]
         audio_out = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     else:
-        audio_map = ["-map", f"{aud_idx}:a:0"]
+        audio_map = ["-map", "[audiobed]"]
         audio_out = ["-c:a", "aac", "-b:a", "192k"]
     ffmpeg.run_ffmpeg(
         [

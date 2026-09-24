@@ -38,7 +38,9 @@ _RUNTIME_DEPS = {"faster_whisper", "ctranslate2", "fastapi", "uvicorn", "jinja2"
 # these up front so a wrong interpreter fails in the first second instead of
 # after a multi-minute probe + mezzanine build.
 _STAGE_DEPS = {"transcribe": ("faster_whisper", "ctranslate2"),
-               "all": ("faster_whisper", "ctranslate2")}
+               "all": ("faster_whisper", "ctranslate2"),
+               "cue-check": ("faster_whisper", "ctranslate2"),
+               "sync-check": ("faster_whisper", "ctranslate2")}
 
 
 def _dependency_error(missing: list[str]) -> str:
@@ -121,9 +123,42 @@ def _cmd_align(ep, args):
 
 
 def _cmd_align_check(ep, args):
-    """Reaction format: render 2s lip-sync verification clips per playback segment."""
+    """Reaction format: render lip-sync verification clips per playback segment."""
     from . import align as align_mod  # lazy: keeps cli importable without numpy
     align_mod.render_checks(ep, seconds=args.seconds, force=args.force)
+
+
+def _cmd_cue_check(ep, args) -> int:
+    """Reaction format: re-transcribe around every cue transition in the rendered
+    output and flag any surviving fragment of the cue phrase."""
+    from . import cuecheck as cuecheck_mod  # lazy: keeps cli importable without faster_whisper
+    report = cuecheck_mod.run(ep, output_path=Path(args.output) if args.output else None)
+    if report["violations"]:
+        print(f"cue-check: {len(report['violations'])}/{report['checked']} transition(s) "
+              f"have a surviving cue fragment:", file=sys.stderr)
+        for v in report["violations"]:
+            words_txt = ", ".join(f"{h['word']!r}" for h in v["hits"])
+            print(f"  {v['id']} ({v['kind']} cue) @ output {v['output_t']:.3f}s: {words_txt} "
+                  f"-> {v['clip']}", file=sys.stderr)
+        return 1
+    print(f"cue-check: {report['checked']} transition(s) checked, no surviving fragments "
+          f"({report['skipped']} skipped, out of window).")
+    return 0
+
+
+def _cmd_sync_check(ep, args) -> int:
+    """Reaction format: verify each playback segment's cumulative source position
+    against its own re-transcribed source audio (spec section 4)."""
+    from . import sync_check as sync_check_mod  # lazy: keeps cli importable without faster_whisper
+    report = sync_check_mod.run(ep)
+    print(f"sync-check: {len(report['segments'])} segment(s):")
+    for r in report["segments"]:
+        if r["median_offset"] is None:
+            print(f"  {r['id']}: {r['n_matched']} word(s) matched — too few to trust")
+        else:
+            print(f"  {r['id']}: median offset {r['median_offset']:+.3f}s "
+                  f"(spread {r['spread']:.3f}s, {r['n_matched']} word(s))")
+    return 0
 
 
 def _cmd_shotlist(ep, args):
@@ -227,9 +262,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     ac = sub.add_parser("align-check", help=_cmd_align_check.__doc__ or "align-check")
     ac.add_argument("episode")
-    ac.add_argument("--seconds", type=float, default=2.0,
-                    help="length of each verification clip (default: 2)")
+    ac.add_argument("--seconds", type=float, default=8.0,
+                    help="length of each verification clip (default: 8)")
     ac.set_defaults(func=_cmd_align_check)
+
+    cc = sub.add_parser("cue-check", help=_cmd_cue_check.__doc__ or "cue-check")
+    cc.add_argument("episode")
+    cc.add_argument("--output", default=None,
+                    help="rendered file to check (default: the last compose output)")
+    cc.set_defaults(func=_cmd_cue_check)
+
+    sc = sub.add_parser("sync-check", help=_cmd_sync_check.__doc__ or "sync-check")
+    sc.add_argument("episode")
+    sc.set_defaults(func=_cmd_sync_check)
 
     rp = sub.add_parser("review", help="start the review gate on localhost")
     rp.add_argument("episode")

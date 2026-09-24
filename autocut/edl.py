@@ -67,6 +67,33 @@ def output_duration(spans: list[Span]) -> float:
     return out_start + (src_out - src_in)
 
 
+def windowed_keep_spans(spans: list[Span], window: tuple[float, float]) -> list[tuple[float, float]]:
+    """Kept (source_in, source_out) spans overlapping an OUTPUT window,
+    clipped to it — exactly what a real cut.mkv would contain for that slice.
+
+    Output time and source time only coincide before the first EDL drop.
+    Reading raw (uncut) source media with the output window's own start as a
+    seek point is only correct until the first drop that precedes the
+    window — after that, the read comes from the wrong moment of the
+    recording. Concatenating these spans (in order), each independently
+    source-time trimmed, reconstructs the correct output-time-continuous
+    media instead. Any stage that seeks into raw/uncut media for an OUTPUT
+    window must go through this (or already-cut media) — see compose.py's
+    speaker layer and audiotrack.py's host bed.
+    """
+    w0, length = window
+    out: list[tuple[float, float]] = []
+    for src_in, src_out, out_start in spans:
+        out_len = src_out - src_in
+        out_end = out_start + out_len
+        if out_end <= w0 or out_start >= w0 + length:
+            continue
+        clip_head = max(0.0, w0 - out_start)
+        clip_tail = max(0.0, out_end - (w0 + length))
+        out.append((src_in + clip_head, src_out - clip_tail))
+    return out
+
+
 def snap(t: float, fps: float) -> float:
     """Snap a timestamp to the nearest frame boundary. Cuts must land on frames."""
     return round(t * fps) / fps

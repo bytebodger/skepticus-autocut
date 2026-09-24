@@ -71,7 +71,7 @@ def style_header_from_config(cfg: dict, play_w: int, play_h: int) -> str:
     secondary = _ass_color(wh.get("base_color", "#FFFFFF"))       # white
     outline_c = _ass_color(cfg.get("outline_color", "#000000"))
     font = cfg.get("font", "Arial")
-    size = int(cfg.get("font_size", 100))
+    size = int(cfg.get("font_size", 50))
     outline = cfg.get("outline", 4)
     shadow = cfg.get("shadow", 3)
     margin_v = int(cfg.get("margin_bottom", 100))

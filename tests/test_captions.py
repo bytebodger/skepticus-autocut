@@ -161,11 +161,11 @@ def test_ass_color_rgb_and_literal():
 
 def test_style_header_from_config():
     cfg = {
-        "font": "Arial", "font_size": 100, "margin_bottom": 90,
+        "font": "Arial", "font_size": 50, "margin_bottom": 90,
         "word_highlight": {"base_color": "#FFFFFF", "highlight_color": "#40FF40"},
     }
     h = captions.style_header_from_config(cfg, 3840, 2160)
     assert "PlayResX: 3840" in h and "PlayResY: 2160" in h
     # Primary (current word) = highlight green; Secondary (base) = white.
-    assert "Skepticus,Arial,100,&H0040FF40,&H00FFFFFF," in h
+    assert "Skepticus,Arial,50,&H0040FF40,&H00FFFFFF," in h
     assert h.rstrip().endswith("Effect, Text")   # ends ready for Dialogue lines

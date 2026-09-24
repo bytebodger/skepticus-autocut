@@ -147,20 +147,24 @@ class Episode:
         return self.inbox / f"{self.episode_id}_source.mp4"
 
     @property
+    def source_thumb(self) -> Path | None:
+        """The source video's YouTube thumbnail, shown in the content window
+        during opening commentary instead of a frozen first frame. Convention:
+        a sibling of the host drop named ``<episode_id>_thumb.<ext>``, same
+        auto-detection as ``source_video``. Unlike ``source_video``, this is
+        optional — ``None`` when absent means the caller falls back to the
+        frozen first frame. A ``reaction.thumbnail`` config path can override
+        this lookup (resolved by the caller, not here)."""
+        for ext in (".jpg", ".jpeg", ".png", ".webp", ".JPG", ".JPEG", ".PNG", ".WEBP"):
+            candidate = self.inbox / f"{self.episode_id}_thumb{ext}"
+            if candidate.exists():
+                return candidate
+        return None
+
+    @property
     def align_dir(self) -> Path:
         """Work area for the reaction alignment stage."""
         return self.work / "align"
-
-    @property
-    def source_speech_wav(self) -> Path:
-        """16kHz mono speech audio extracted from the source, for transcription
-        and cross-correlation (mirrors the host's speech.wav)."""
-        return self.align_dir / "source_speech.wav"
-
-    @property
-    def source_words_json(self) -> Path:
-        """Word-level transcript of the source file (its own words, no bleed)."""
-        return self.align_dir / "source_words.json"
 
     @property
     def playback_json(self) -> Path:
@@ -170,8 +174,38 @@ class Episode:
 
     @property
     def align_check_dir(self) -> Path:
-        """Rendered 2s lip-sync verification clips, one per playback segment."""
+        """Rendered lip-sync verification clips, one per playback segment."""
         return self.align_dir / "check"
+
+    @property
+    def cuecheck_dir(self) -> Path:
+        """Work area for the cue-leak checker: short re-transcribed clips
+        around each cue transition in the rendered output (reaction spec
+        section 2, 6 — the automated version of listening to every cut)."""
+        return self.work / "cuecheck"
+
+    @property
+    def cuecheck_report_json(self) -> Path:
+        return self.cuecheck_dir / "report.json"
+
+    @property
+    def sync_check_dir(self) -> Path:
+        """Work area for the playback sync checker: per-segment source
+        re-transcriptions used to verify the cumulative source position
+        against ground truth (reaction spec section 4)."""
+        return self.work / "sync_check"
+
+    @property
+    def sync_check_report_json(self) -> Path:
+        return self.sync_check_dir / "report.json"
+
+    @property
+    def source_words_json(self) -> Path:
+        """Full-episode transcript of the reaction source file's own clean
+        audio, in SOURCE timebase — cached once so every segment's global
+        text-locate (reaction spec section 4) is a local search, not a
+        re-transcription."""
+        return self.align_dir / "source_words.json"
 
     @property
     def content_dir(self) -> Path:
@@ -190,6 +224,19 @@ class Episode:
     @property
     def content_filter_script(self) -> Path:
         return self.compose_dir / "content_track.filter"
+
+    @property
+    def audio_track(self) -> Path:
+        """Reaction format: full-window audio track switching between host mic
+        (commentary) and source audio (playback), own cached step (reaction
+        spec section 8). Same structure as ``content_track``. PCM/WAV: an
+        intermediate artifact the composite still re-encodes, not final delivery
+        — lossless avoids a needless double lossy (AAC->AAC) round trip."""
+        return self.compose_dir / "audio_track.wav"
+
+    @property
+    def audio_filter_script(self) -> Path:
+        return self.compose_dir / "audio_track.filter"
 
     # --- phase 3 visuals ---
     @property
