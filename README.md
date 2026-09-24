@@ -72,6 +72,77 @@ caches), `-v` (debug logging).
 | 8 composite | `composite` | `out/<ep>.mp4` |
 | 9 QC | `qc` | `out/<ep>_report.md` + contact sheet |
 
+## Reaction format
+
+A second episode type: reacting to a source video, with the source playing in
+a content window and the host in a speaker window (split-screen show frame,
+not a raw recording). See
+[`skepticus-autocut-reaction-spec.md`](skepticus-autocut-reaction-spec.md) for
+the full design — cue phrases, the alignment math, the playback-map schema —
+and [`skepticus-autocut-compositor-spec.md`](skepticus-autocut-compositor-spec.md)
+for the show-frame layout `compose` renders.
+
+Two files in `inbox/`, alongside the usual `<ep>.mp4` host recording:
+
+- `<ep>_source.<ext>` — the clean source video being reacted to (required).
+- `<ep>_thumb.<ext>` — the source's YouTube thumbnail (optional). Shown in the
+  content window during opening commentary instead of a frozen first frame;
+  falls back to the frozen frame when absent.
+
+The host declares playback boundaries out loud — "end my commentary" starts
+playback, "begin my commentary" ends it (both configurable; see below):
+
+```
+# Same host-recording prep as the monologue format
+python -m autocut probe ep042
+python -m autocut transcribe ep042
+
+# Reaction-specific: align host<->source from spoken cues -> playback.json
+python -m autocut align ep042
+python -m autocut align-check ep042      # renders a lip-sync clip per segment for review
+
+# autoauthor/validate/review are unchanged, but now playback-aware: no drops
+# land inside a playback region, and the cue phrases themselves are cut
+python -m autocut autoauthor ep042
+python -m autocut validate ep042
+python -m autocut review ep042           # optional veto gate
+
+# compose (the Phase-2 compositor: background + speaker window + content
+# window + captions + audio, one command) detects playback.json and builds
+# the content/audio tracks from it automatically -- no manual content.json
+python -m autocut compose ep042 --range 0:60   # iterate on a window first
+python -m autocut compose ep042                # full render
+
+# QC: catch a cue phrase leaking into the rendered output; verify the
+# cumulative source position against a ground-truth re-transcription
+python -m autocut cue-check ep042
+python -m autocut sync-check ep042
+```
+
+| stage | command | output |
+|-------|---------|--------|
+| align | `align` | `work/<ep>/playback.json` — host<->source segment map |
+| align verify | `align-check` | lip-sync clips, `work/<ep>/align/check/*.mp4` |
+| compose | `compose` | `work/<ep>/compose/composite.mp4` |
+| cue leak check | `cue-check` | `work/<ep>/cuecheck/report.json` |
+| sync check | `sync-check` | `work/<ep>/sync_check/report.json` |
+
+### Config (`config/layout.yaml`, `reaction:` section)
+
+All keys are optional; shown values are the defaults used when the section or
+an individual key is absent.
+
+```yaml
+reaction:
+  cue_playback_start: "end my commentary"      # said just before playback starts
+  cue_playback_stop: "begin my commentary"     # said just after playback stops
+  cue_playback_start_variants: ["and my commentary"]  # accepted mishearings
+  match_levels: true           # gain-match host mic vs source audio
+  source_gain_db: 0
+  crossfade_ms: 75              # crossfade at every host<->source audio switch
+  thumbnail: inbox/ep042_thumb.jpg   # optional; overrides thumbnail auto-detect
+```
+
 ## Design invariants
 
 - **All EDL times are SOURCE-timebase.** `source_to_output` (in `edl.py`) converts
