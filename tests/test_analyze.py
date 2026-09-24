@@ -178,6 +178,122 @@ def test_short_source_skips_sparse_check(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Reaction spec section 6 — autoauthor constraints
+# --------------------------------------------------------------------------- #
+
+def _cut(start, end, reason="long_silence", confidence=1.0, pad="both"):
+    return analyze._Cut(start, end, reason, confidence, "note", pad)
+
+
+def test_clip_cuts_from_playback_truncates_a_straddling_cut():
+    cuts = [_cut(5.0, 15.0)]
+    out = analyze._clip_cuts_from_playback(cuts, [(8.0, 12.0)])
+    assert [(c.start, c.end) for c in out] == [(5.0, 8.0), (12.0, 15.0)]
+
+
+def test_clip_cuts_from_playback_drops_a_cut_fully_inside():
+    cuts = [_cut(9.0, 10.0, reason="filler", confidence=0.95, pad="none")]
+    assert analyze._clip_cuts_from_playback(cuts, [(8.0, 12.0)]) == []
+
+
+def test_clip_cuts_from_playback_leaves_non_overlapping_cuts_alone():
+    cuts = [_cut(1.0, 2.0)]
+    out = analyze._clip_cuts_from_playback(cuts, [(8.0, 12.0)])
+    assert [(c.start, c.end) for c in out] == [(1.0, 2.0)]
+
+
+def _make_reaction_episode(tmp_path):
+    # commentary "intro" -> "end my commentary" cue -> [playback 2.0-10.0] ->
+    # "begin my commentary" cue -> commentary "resumed".
+    words = [
+        (0.0, 0.5, "intro"),
+        (1.0, 1.3, "end"), (1.3, 1.6, "my"), (1.6, 2.0, "commentary."),
+        (10.0, 10.3, "begin"), (10.3, 10.6, "my"), (10.6, 11.0, "commentary."),
+        (12.0, 12.5, "resumed"),
+    ]
+    ep = _make_episode(tmp_path, words, duration=13.0, fps=24,
+                       silences=[(2.0, 2.5), (9.5, 10.0)])
+    ep.playback_json.write_text(json.dumps({
+        "version": 1, "episode_id": "ep001", "source_file": "inbox/ep001_source.mp4",
+        "segments": [{"id": "pb001", "host_in": 2.0, "host_out": 10.0,
+                      "source_in": 0.0, "source_out": 8.0,
+                      "offset_source": "cumulative", "refinement_delta": None,
+                      "seek_detected": False}],
+    }), encoding="utf-8")
+    return ep
+
+
+def test_autoauthor_reaction_cuts_no_drops_inside_playback(tmp_path):
+    ep = _make_reaction_episode(tmp_path)
+    result = analyze.autoauthor(ep)
+    for s in result["segments"]:
+        if s["action"] != "drop":
+            continue
+        assert s["out"] <= 2.0 + 1e-6 or s["in"] >= 10.0 - 1e-6, (
+            f"drop {s} overlaps the playback span [2.0, 10.0)"
+        )
+
+
+def test_autoauthor_reaction_cue_drops_fall_back_when_no_silence_nearby(tmp_path):
+    # This fixture's silences ([2.0,2.5], [9.5,10.0]) don't cover either cue's
+    # own commentary-side edge -> both fall back to the raw boundary + pad,
+    # flagged with a confidence under review.py's 0.8 audio-scrub threshold.
+    ep = _make_reaction_episode(tmp_path)
+    result = analyze.autoauthor(ep)
+    cue_drops = [s for s in result["segments"] if s.get("reason") == "cue"]
+    assert len(cue_drops) == 2
+    start_drop = next(d for d in cue_drops if d["in"] < 2.0)
+    assert start_drop["in"] == pytest.approx(1.0 - analyze.CUE_EDGE_PAD, abs=1 / 24)
+    assert start_drop["out"] == pytest.approx(2.0, abs=1e-3)
+    assert start_drop["confidence"] == analyze.CUE_EDGE_FALLBACK_CONFIDENCE
+    assert start_drop["confidence"] < 0.8
+    stop_drop = next(d for d in cue_drops if d["in"] >= 10.0)
+    assert stop_drop["in"] == pytest.approx(10.0, abs=1e-3)
+    assert stop_drop["out"] == pytest.approx(11.0 + analyze.CUE_EDGE_PAD, abs=1 / 24)
+    assert stop_drop["confidence"] == analyze.CUE_EDGE_FALLBACK_CONFIDENCE
+
+
+def test_autoauthor_reaction_cue_drops_snap_to_confirmed_silence(tmp_path):
+    # Same phrase timeline, but with real confirmed silence flanking each
+    # cue's commentary-side edge — both edges must land there, at full
+    # confidence, instead of on the raw Whisper boundary or a padded fallback.
+    words = [
+        (0.0, 0.5, "intro"),
+        (1.0, 1.3, "end"), (1.3, 1.6, "my"), (1.6, 2.0, "commentary."),
+        (10.0, 10.3, "begin"), (10.3, 10.6, "my"), (10.6, 11.0, "commentary."),
+        (12.0, 12.5, "resumed"),
+    ]
+    ep = _make_episode(tmp_path, words, duration=13.0, fps=24,
+                       silences=[(0.6, 0.95), (2.0, 2.5), (9.5, 10.0), (11.05, 11.35)])
+    ep.playback_json.write_text(json.dumps({
+        "version": 1, "episode_id": "ep001", "source_file": "inbox/ep001_source.mp4",
+        "segments": [{"id": "pb001", "host_in": 2.0, "host_out": 10.0,
+                      "source_in": 0.0, "source_out": 8.0,
+                      "offset_source": "cumulative", "refinement_delta": None,
+                      "seek_detected": False}],
+    }), encoding="utf-8")
+
+    result = analyze.autoauthor(ep)
+    cue_drops = [s for s in result["segments"] if s.get("reason") == "cue"]
+    assert len(cue_drops) == 2
+    start_drop = next(d for d in cue_drops if d["in"] < 2.0)
+    assert start_drop["in"] == pytest.approx(0.95, abs=1 / 24)   # end of the preceding silence
+    assert start_drop["confidence"] == 1.0
+    stop_drop = next(d for d in cue_drops if d["in"] >= 10.0)
+    assert stop_drop["out"] == pytest.approx(11.05, abs=1 / 24)  # start of the following silence
+    assert stop_drop["confidence"] == 1.0
+
+
+def test_autoauthor_reaction_keeps_the_playback_span_intact(tmp_path):
+    ep = _make_reaction_episode(tmp_path)
+    result = analyze.autoauthor(ep)
+    spans = edl.build_time_map(result["segments"])
+    # Every instant in [2.0, 10.0) must map to the output (i.e. survive as kept).
+    for t in (2.0, 5.0, 9.99):
+        assert edl.source_to_output(t, spans) is not None
+
+
+# --------------------------------------------------------------------------- #
 # Cache
 # --------------------------------------------------------------------------- #
 

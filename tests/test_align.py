@@ -1,20 +1,17 @@
-"""Reaction alignment: coarse transcript matching, boundary snapping, the fine
-cross-correlation, and the equal-duration invariant.
+"""Reaction alignment: cue detection, alternation validation, and the
+cumulative source-position arithmetic (reaction spec build steps 1-3).
 
-Pure logic + a synthetic audio round-trip. The end-to-end run (Whisper + ffmpeg
-against a real fixture) and the eyeball lip-sync check are done separately."""
+Mostly pure logic, plus one dry-run smoke test of the full orchestration. The
+end-to-end run against real Whisper output and the eyeball lip-sync check are
+done separately."""
 
-import wave
+import json
 
-import numpy as np
 import pytest
 
-from autocut import align
+from autocut import align, ffmpeg
+from autocut.paths import resolve
 
-
-# --------------------------------------------------------------------------- #
-# Coarse transcript matching
-# --------------------------------------------------------------------------- #
 
 def _words(tokens, t0=0.0, step=0.5):
     """A words.json-shaped list from tokens, evenly spaced."""
@@ -25,190 +22,324 @@ def _words(tokens, t0=0.0, step=0.5):
     return out
 
 
-PHRASE = "the argument here is simple and clearly wrong about everything today".split()
-
-
-def test_normalize_strips_punctuation_and_case():
-    n = align.normalize_words([{"word": "The,", "start": 0, "end": 1},
-                               {"word": "—", "start": 1, "end": 2}])
-    assert n[0]["norm"] == "the"
-    assert n[1]["norm"] == ""          # punctuation-only normalises to empty
-
-
-def test_coarse_finds_embedded_playback_run():
-    source = align.normalize_words(_words(PHRASE))
-    # Host: some talk, then the source phrase as bleed, then more talk.
-    host_tokens = "so let us watch".split() + PHRASE + "wow that was wild".split()
-    host = align.normalize_words(_words(host_tokens))
-
-    regions = align.find_coarse_regions(host, source)
-    assert len(regions) == 1
-    r = regions[0]
-    # The matched host span is the embedded phrase (offset by the 4 lead words).
-    assert r["h_start"] == 4
-    assert r["h_end"] == 4 + len(PHRASE) - 1
-    assert r["s_start"] == 0
-    t = align.region_times(r, host, source)
-    assert t["confidence"] == 1.0      # every word matched
-
-
-def test_coarse_tolerates_a_garbled_bleed_word():
-    source = align.normalize_words(_words(PHRASE))
-    garbled = PHRASE.copy()
-    garbled[5] = "clumsy"              # one bleed word mis-transcribed
-    host = align.normalize_words(_words("intro here".split() + garbled + ["done"]))
-
-    regions = align.find_coarse_regions(host, source)
-    assert len(regions) == 1
-    r = regions[0]
-    assert r["matches"] >= align.MIN_RUN
-    # The run still spans the whole phrase despite the single miss.
-    assert r["h_end"] - r["h_start"] + 1 == len(PHRASE)
-
-
-def test_coarse_handles_non_contiguous_plays():
-    # Source has two phrases; host plays the SECOND first, then the FIRST — offsets
-    # must be found independently (spec: don't assume contiguity).
-    p1 = "alpha bravo charlie delta echo foxtrot".split()
-    p2 = "one two three four five six seven".split()
-    source = align.normalize_words(_words(p1 + p2))       # p2 starts at index 6
-    host = align.normalize_words(
-        _words("hi".split() + p2 + "then".split() + p1 + ["bye"]))
-
-    regions = align.find_coarse_regions(host, source)
-    assert len(regions) == 2
-    # First host region matches p2 (source index 6), second matches p1 (index 0).
-    first, second = regions
-    assert first["s_start"] == 6
-    assert second["s_start"] == 0
-
-
-def test_coarse_ignores_short_incidental_matches():
-    # A couple of common words in the host that also appear in source must not be
-    # mistaken for playback (needs a run of MIN_RUN).
-    source = align.normalize_words(_words(PHRASE))
-    host = align.normalize_words(_words("the here is fine".split()))  # scattered, < MIN_RUN
-    assert align.find_coarse_regions(host, source) == []
+START = "end my commentary"
+STOP = "begin my commentary"
 
 
 # --------------------------------------------------------------------------- #
-# Boundary snapping
+# Step 1 — cue detection
 # --------------------------------------------------------------------------- #
 
-def test_snap_in_pulls_to_preceding_silence_end():
-    silences = [{"start": 44.0, "end": 47.05}]
-    # playback start near the silence end -> snaps to it
-    assert align.snap_boundary(47.2, silences, "in") == 47.05
+def test_detect_cues_finds_both_phrases_tagged_and_sorted():
+    words = (_words("so anyway".split(), t0=0.0)
+            + _words(START.split(), t0=2.0)
+            + _words("some playback happens here".split(), t0=6.0)
+            + _words(STOP.split(), t0=10.0)
+            + _words("back to commentary".split(), t0=13.0))
+    cues = align.detect_cues({"words": words}, start_phrase=START, stop_phrase=STOP)
+    assert [c["kind"] for c in cues] == ["start", "stop"]
+    assert cues[0]["start"] < cues[1]["start"]
 
 
-def test_snap_out_pulls_to_following_silence_start():
-    silences = [{"start": 112.6, "end": 114.0}]
-    assert align.snap_boundary(112.8, silences, "out") == 112.6
+def test_detect_cues_requires_the_complete_phrase():
+    # "commentary" alone must not fire the cue (spec §2: avoid single words
+    # that occur naturally in the subject matter).
+    words = _words("let's discuss the biblical commentary on this passage".split())
+    cues = align.detect_cues({"words": words}, start_phrase=START, stop_phrase=STOP)
+    assert cues == []
 
 
-def test_snap_leaves_boundary_alone_when_no_silence_within_tol():
-    silences = [{"start": 10.0, "end": 11.0}]
-    assert align.snap_boundary(47.2, silences, "in") == 47.2
+def test_detect_cues_accepts_a_start_variant():
+    # Whisper regularly mishears "end my commentary" as "and my commentary".
+    words = (_words("so anyway".split(), t0=0.0)
+            + _words("and my commentary".split(), t0=2.0)
+            + _words("some playback happens here".split(), t0=6.0)
+            + _words(STOP.split(), t0=10.0))
+    cues = align.detect_cues({"words": words}, start_phrase=START, stop_phrase=STOP,
+                             start_variants=("and my commentary",))
+    assert [c["kind"] for c in cues] == ["start", "stop"]
+
+
+def test_detect_cues_ignores_variant_when_not_configured():
+    words = _words("and my commentary".split(), t0=2.0)
+    cues = align.detect_cues({"words": words}, start_phrase=START, stop_phrase=STOP)
+    assert cues == []
+
+
+def test_detect_cues_ignores_words_outside_any_cue():
+    words = (_words("filler words here".split(), t0=0.0)
+            + _words(START.split(), t0=3.0)
+            + _words("more filler".split(), t0=6.0))
+    cues = align.detect_cues({"words": words}, start_phrase=START, stop_phrase=STOP)
+    assert len(cues) == 1
+    assert cues[0]["kind"] == "start"
 
 
 # --------------------------------------------------------------------------- #
-# Equal-duration invariant
+# Step 1 — alternation validation
 # --------------------------------------------------------------------------- #
 
-def test_build_segments_enforces_equal_durations():
-    source = align.normalize_words(_words(PHRASE))
-    host = align.normalize_words(_words("lead in now".split() + PHRASE + ["end"]))
-    regions = align.find_coarse_regions(host, source)
-    # A constant lag for the one region.
-    lag = host[3]["start"] - source[0]["start"]
-    segs = align.build_segments(regions, host, source, silences=[], lags=[(lag, 0.9)],
-                                host_fps=30.0, source_dur=1000.0)
+def _cue(kind, t):
+    return {"start": t, "end": t + 1.0, "kind": kind}
+
+
+def test_alternation_accepts_a_clean_sequence():
+    cues = [_cue("start", 10), _cue("stop", 20), _cue("start", 30), _cue("stop", 40)]
+    align.validate_alternation(cues)   # does not raise
+
+
+def test_alternation_accepts_a_trailing_open_segment():
+    # Ends mid-playback (spec §2: "may end in either state") -- not a violation.
+    cues = [_cue("start", 10), _cue("stop", 20), _cue("start", 30)]
+    align.validate_alternation(cues)   # does not raise
+
+
+def test_alternation_rejects_a_leading_stop_cue():
+    # The recording is assumed to open in commentary (spec §2).
+    cues = [_cue("stop", 5), _cue("start", 10)]
+    with pytest.raises(RuntimeError, match="alternation broken"):
+        align.validate_alternation(cues)
+
+
+def test_alternation_rejects_two_starts_in_a_row():
+    cues = [_cue("start", 10), _cue("start", 20)]
+    with pytest.raises(RuntimeError, match="alternation broken"):
+        align.validate_alternation(cues)
+
+
+def test_alternation_rejects_two_stops_in_a_row():
+    cues = [_cue("start", 10), _cue("stop", 20), _cue("stop", 30)]
+    with pytest.raises(RuntimeError, match="alternation broken"):
+        align.validate_alternation(cues)
+
+
+def test_alternation_error_reports_violating_timestamps():
+    cues = [_cue("start", 10), _cue("start", 25.5)]
+    with pytest.raises(RuntimeError, match=r"25\.50s"):
+        align.validate_alternation(cues)
+
+
+# --------------------------------------------------------------------------- #
+# Step 2 — segment boundaries from cues
+# --------------------------------------------------------------------------- #
+
+def test_segments_from_cues_pairs_start_and_stop():
+    cues = [_cue("start", 10), _cue("stop", 20)]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=[])
+    assert segs == [{"host_in": 11.0, "host_out": 20.0}]   # host_in = start cue's END
+
+
+def test_segments_from_cues_pairs_multiple_segments_independently():
+    cues = [_cue("start", 10), _cue("stop", 20), _cue("start", 50), _cue("stop", 70)]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=[])
+    assert len(segs) == 2
+    assert segs[0] == {"host_in": 11.0, "host_out": 20.0}
+    assert segs[1] == {"host_in": 51.0, "host_out": 70.0}
+
+
+def test_segments_from_cues_closes_a_trailing_segment_at_episode_end():
+    cues = [_cue("start", 10), _cue("stop", 20), _cue("start", 50)]
+    segs = align.segments_from_cues(cues, episode_duration=90.0, silences=[])
+    assert segs[-1] == {"host_in": 51.0, "host_out": 90.0}
+
+
+def test_segments_from_cues_handles_no_cues():
+    assert align.segments_from_cues([], episode_duration=100.0, silences=[]) == []
+
+
+# --------------------------------------------------------------------------- #
+# Step 2 — snapping boundaries onto confirmed acoustic silence (Whisper's word
+# timestamps in this project consistently run early).
+# --------------------------------------------------------------------------- #
+
+def test_segments_from_cues_snaps_host_in_forward_to_confirmed_silence():
+    # cue's claimed end is 11.0, but real speech ("-tary") audibly continues
+    # until the confirmed silence at 11.3 - host_in must land past it.
+    cues = [_cue("start", 10), _cue("stop", 20)]
+    silences = [{"start": 11.3, "end": 11.9}]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=silences)
+    assert segs[0]["host_in"] == 11.3
+
+
+def test_segments_from_cues_snaps_host_out_forward_to_confirmed_speech():
+    # cue's claimed start is 20.0, but the confirmed silence before it runs
+    # until 20.25 - real speech can't have resumed before that.
+    cues = [_cue("start", 10), _cue("stop", 20)]
+    silences = [{"start": 19.6, "end": 20.25}]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=silences)
+    assert segs[0]["host_out"] == 20.25
+
+
+def test_segments_from_cues_never_snaps_backward():
+    # A confirmed silence entirely before the cue's claimed end must not pull
+    # host_in earlier than the raw timestamp.
+    cues = [_cue("start", 10), _cue("stop", 20)]
+    silences = [{"start": 9.0, "end": 9.5}]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=silences)
+    assert segs[0]["host_in"] == 11.0
+
+
+def test_segments_from_cues_ignores_a_distant_silence():
+    # No confirmed silence within CUE_SNAP_MAX_GAP of the cue - trust the raw
+    # cue timestamp rather than snapping across an implausibly large gap.
+    cues = [_cue("start", 10), _cue("stop", 20)]
+    silences = [{"start": 50.0, "end": 50.5}]
+    segs = align.segments_from_cues(cues, episode_duration=100.0, silences=silences)
+    assert segs[0]["host_in"] == 11.0
+
+
+# --------------------------------------------------------------------------- #
+# Step 2 — cumulative source-position arithmetic
+# --------------------------------------------------------------------------- #
+
+def test_cumulative_position_starts_at_zero():
+    segs = align.assign_source_positions([{"host_in": 10.0, "host_out": 25.0}])
     assert len(segs) == 1
     s = segs[0]
-    assert set(s) == {"id", "host_in", "host_out", "source_in", "source_out",
-                      "confidence", "correlation_peak"}
     assert s["id"] == "pb001"
-    assert (s["source_out"] - s["source_in"]) == pytest.approx(
-        s["host_out"] - s["host_in"], abs=1e-6)
+    assert s["source_in"] == 0.0
+    assert s["source_out"] == pytest.approx(15.0)
+    assert s["offset_source"] == "cumulative"
+    assert s["refinement_delta"] is None
+    assert s["seek_detected"] is False
+
+
+def test_cumulative_position_resumes_where_the_previous_segment_stopped():
+    # Pausing stops the source clock (spec §3): segment 2 resumes at segment
+    # 1's source_out, regardless of the host-side gap between them.
+    raw = [{"host_in": 10.0, "host_out": 25.0}, {"host_in": 100.0, "host_out": 130.0}]
+    segs = align.assign_source_positions(raw)
+    assert segs[0]["source_in"] == 0.0
+    assert segs[0]["source_out"] == pytest.approx(15.0)
+    assert segs[1]["source_in"] == pytest.approx(15.0)
+    assert segs[1]["source_out"] == pytest.approx(45.0)
+
+
+def test_cumulative_position_ids_are_sequential():
+    raw = [{"host_in": 0.0, "host_out": 5.0}, {"host_in": 10.0, "host_out": 12.0},
+           {"host_in": 20.0, "host_out": 21.0}]
+    segs = align.assign_source_positions(raw)
+    assert [s["id"] for s in segs] == ["pb001", "pb002", "pb003"]
+
+
+# --------------------------------------------------------------------------- #
+# Duration invariant
+# --------------------------------------------------------------------------- #
+
+def test_assert_equal_durations_accepts_cumulative_output():
+    segs = align.assign_source_positions([{"host_in": 5.0, "host_out": 30.0}])
     align.assert_equal_durations(segs)   # does not raise
 
 
-def test_assert_equal_durations_rejects_divergent_segment():
+def test_assert_equal_durations_rejects_a_divergent_segment():
     bad = [{"id": "pb001", "host_in": 10.0, "host_out": 20.0,
-            "source_in": 0.0, "source_out": 9.0,   # 9s vs 10s
-            "confidence": 0.9, "correlation_peak": 0.8}]
+            "source_in": 0.0, "source_out": 9.0}]   # 9s vs 10s
     with pytest.raises(RuntimeError, match="source duration"):
         align.assert_equal_durations(bad)
 
 
-def test_clamp_preserves_equal_durations_off_source_head():
-    # A coarse estimate that put source_in negative: clamp shifts host too, so the
-    # durations stay equal.
-    hi, ho, si, so = align._clamp_to_source(47.0, 60.0, -1.5, 11.5, source_dur=1000.0)
-    assert si == 0.0
-    assert (so - si) == pytest.approx(ho - hi, abs=1e-9)
+# --------------------------------------------------------------------------- #
+# Reaction config (cue phrase overrides)
+# --------------------------------------------------------------------------- #
+
+def _episode(tmp_path):
+    from autocut.paths import Episode
+    return Episode(episode_id="ep", root=tmp_path)
+
+
+def test_reaction_config_defaults_when_no_config_file(tmp_path):
+    cfg = align._reaction_config(_episode(tmp_path))
+    assert cfg["cue_playback_start"] == align.DEFAULT_CUE_PLAYBACK_START
+    assert cfg["cue_playback_stop"] == align.DEFAULT_CUE_PLAYBACK_STOP
+
+
+def test_reaction_config_reads_overrides(tmp_path):
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "layout.yaml").write_text(
+        "reaction:\n"
+        "  cue_playback_start: roll the clip\n"
+        "  cue_playback_stop: pause the clip\n",
+        encoding="utf-8",
+    )
+    cfg = align._reaction_config(_episode(tmp_path))
+    assert cfg["cue_playback_start"] == "roll the clip"
+    assert cfg["cue_playback_stop"] == "pause the clip"
+
+
+def test_reaction_config_defaults_when_config_has_no_reaction_section(tmp_path):
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "layout.yaml").write_text("style: default\n", encoding="utf-8")
+    cfg = align._reaction_config(_episode(tmp_path))
+    assert cfg["cue_playback_start"] == align.DEFAULT_CUE_PLAYBACK_START
 
 
 # --------------------------------------------------------------------------- #
-# Fine alignment — synthetic audio round-trip through real wav I/O.
+# End-to-end orchestration (dry-run smoke test)
 # --------------------------------------------------------------------------- #
 
-SR = 16000
+@pytest.fixture
+def dry_run():
+    ffmpeg.set_dry_run(True)
+    try:
+        yield
+    finally:
+        ffmpeg.set_dry_run(False)
 
 
-def _write_wav(path, sig):
-    pcm = np.clip(sig, -1.0, 1.0)
-    pcm = (pcm * 32767).astype(np.int16)
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(pcm.tobytes())
+def test_run_writes_playback_json_from_a_clean_cue_sequence(dry_run, tmp_path):
+    ep = resolve("epcue", root=tmp_path)
+    ep.transcript_dir.mkdir(parents=True, exist_ok=True)
+    ep.work.mkdir(parents=True, exist_ok=True)
+    words = (_words("intro chat happens here".split(), t0=0.0)
+            + _words(START.split(), t0=3.0)
+            + _words("the source plays for a while".split(), t0=6.0)
+            + _words(STOP.split(), t0=20.0)
+            + _words("and now we wrap up".split(), t0=23.0))
+    ep.words_json.write_text(json.dumps({"words": words}), encoding="utf-8")
+    ep.silence_json.write_text(json.dumps({"silences": []}), encoding="utf-8")
+    ep.probe_json.write_text(json.dumps({"source_duration": 30.0, "fps": 24.0}),
+                             encoding="utf-8")
+
+    playback = align.run(ep)
+
+    assert ep.playback_json.exists()
+    assert playback["episode_id"] == "epcue"
+    assert len(playback["segments"]) == 1
+    seg = playback["segments"][0]
+    assert seg["id"] == "pb001"
+    assert seg["source_in"] == 0.0
+    assert seg["source_out"] == pytest.approx(seg["host_out"] - seg["host_in"], abs=1e-6)
+    assert seg["offset_source"] == "cumulative"
+    assert seg["refinement_delta"] is None
+    assert seg["seek_detected"] is False
 
 
-def _structured_signal(seconds, seed=0):
-    """Band-limited carrier with a slow, random amplitude envelope, so the energy
-    envelope has structure to lock onto (stationary noise would not)."""
-    rng = np.random.default_rng(seed)
-    n = int(seconds * SR)
-    t = np.arange(n) / SR
-    carrier = sum(np.sin(2 * np.pi * f * t) for f in (500, 1200, 2600))
-    # slow envelope: smoothed noise at ~5 Hz
-    env_raw = rng.standard_normal(int(seconds * 5) + 2)
-    env = np.interp(t, np.linspace(0, seconds, len(env_raw)), env_raw)
-    env = 0.5 + 0.5 * (env - env.min()) / (np.ptp(env) + 1e-9)
-    return (carrier / 3.0) * env
+def test_run_fails_loudly_on_broken_alternation(dry_run, tmp_path):
+    ep = resolve("epbad", root=tmp_path)
+    ep.transcript_dir.mkdir(parents=True, exist_ok=True)
+    ep.work.mkdir(parents=True, exist_ok=True)
+    words = _words(START.split(), t0=0.0) + _words(START.split(), t0=5.0)
+    ep.words_json.write_text(json.dumps({"words": words}), encoding="utf-8")
+    ep.silence_json.write_text(json.dumps({"silences": []}), encoding="utf-8")
+    ep.probe_json.write_text(json.dumps({"source_duration": 30.0, "fps": 24.0}),
+                             encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="alternation broken"):
+        align.run(ep)
+    assert not ep.playback_json.exists()
 
 
-def test_read_wav_slice_returns_requested_span(tmp_path):
-    sig = _structured_signal(5.0)
-    p = tmp_path / "s.wav"
-    _write_wav(p, sig)
-    data, sr = align.read_wav_slice(p, 1.0, 2.0)
-    assert sr == SR
-    assert abs(len(data) - SR) <= 1     # ~1 second of samples
+def test_run_fails_loudly_when_no_cues_are_found(dry_run, tmp_path):
+    ep = resolve("epnocues", root=tmp_path)
+    ep.transcript_dir.mkdir(parents=True, exist_ok=True)
+    ep.work.mkdir(parents=True, exist_ok=True)
+    ep.words_json.write_text(json.dumps({"words": _words("just talking the whole time".split())}),
+                             encoding="utf-8")
+    ep.silence_json.write_text(json.dumps({"silences": []}), encoding="utf-8")
+    ep.probe_json.write_text(json.dumps({"source_duration": 30.0, "fps": 24.0}),
+                             encoding="utf-8")
 
-
-def test_refine_lag_recovers_a_known_delay(tmp_path):
-    lag = 1.3                            # host lags source by 1.3s
-    src = _structured_signal(14.0, seed=1)
-    source_path = tmp_path / "source.wav"
-    _write_wav(source_path, src)
-
-    # Host = source delayed by `lag`, degraded (band-ish noise added) as real
-    # bleed would be. host[t] == source[t - lag].
-    host = np.zeros(int(16.0 * SR), dtype=np.float64)
-    start = int(lag * SR)
-    host[start:start + len(src)] = src
-    rng = np.random.default_rng(2)
-    host += 0.05 * rng.standard_normal(len(host))
-    host_path = tmp_path / "host.wav"
-    _write_wav(host_path, host)
-
-    # Coarse gave the anchor host time and a source estimate 0.4s off the truth.
-    anchor_host = 5.0                    # true source at anchor = 5.0 - 1.3 = 3.7
-    coarse = {"anchor_host": anchor_host, "anchor_source": 3.3,
-              "host_in": 4.0, "host_out": 12.0}
-    recovered, peak = align.refine_lag(host_path, source_path, coarse)
-    assert recovered == pytest.approx(lag, abs=0.05)   # target < 50ms (spec §4)
-    assert peak > 0.5
+    with pytest.raises(RuntimeError, match="no cues detected"):
+        align.run(ep)

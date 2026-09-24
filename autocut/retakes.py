@@ -47,7 +47,7 @@ PHRASE_MARKERS = [
 ]
 
 
-def _norm(token: str) -> str:
+def norm_token(token: str) -> str:
     return re.sub(r"[^a-z0-9]", "", token.lower())
 
 
@@ -81,10 +81,10 @@ def utterances(words: list[dict]) -> list[dict]:
 # Step 2 — explicit-marker cue detection
 # --------------------------------------------------------------------------- #
 
-def _phrase_hits(words: list[dict], phrases: list[list[str]]) -> list[tuple[float, float]]:
+def phrase_hits(words: list[dict], phrases: list[list[str]]) -> list[tuple[float, float]]:
     """Find each phrase (as a normalised token sequence) in the word stream and
     return its (start, end) time span."""
-    norm = [_norm(w["word"]) for w in words]
+    norm = [norm_token(w["word"]) for w in words]
     hits = []
     for toks in phrases:
         n = len(toks)
@@ -101,13 +101,13 @@ def cues(words_doc: dict) -> list[dict]:
     raw: list[tuple[float, float, str]] = []
 
     for w in words:                                    # single-word markers, in context
-        if _norm(w["word"]) in SINGLE_MARKERS:
+        if norm_token(w["word"]) in SINGLE_MARKERS:
             raw.append((float(w["start"]), float(w["end"]), "word"))
     for x in words_doc.get("isolated", []):            # lone words from silence-bounded chunks
-        if any(_norm(t) in SINGLE_MARKERS for t in x["text"].split()):
+        if any(norm_token(t) in SINGLE_MARKERS for t in x["text"].split()):
             raw.append((float(x["start"]), float(x["end"]), "isolated"))
-    phrases = [[_norm(t) for t in p.split()] for p in PHRASE_MARKERS]
-    for s, e in _phrase_hits(words, phrases):
+    phrases = [[norm_token(t) for t in p.split()] for p in PHRASE_MARKERS]
+    for s, e in phrase_hits(words, phrases):
         raw.append((s, e, "phrase"))
 
     raw.sort()
@@ -155,8 +155,8 @@ def _flub_start(pre_words: list[dict], post_words: list[dict]) -> tuple[float | 
     prefix repetition). Find the LAST place before the cue where the redo's opening
     words recur — that's where the flubbed attempt began. Returns (start, match_len)
     or (None, 0) if the redo doesn't repeat a pre-cue phrase."""
-    redo_pre = [t for t in (_norm(w["word"]) for w in post_words[:REDO_PREFIX_WORDS]) if t]
-    pren = [_norm(w["word"]) for w in pre_words]
+    redo_pre = [t for t in (norm_token(w["word"]) for w in post_words[:REDO_PREFIX_WORDS]) if t]
+    pren = [norm_token(w["word"]) for w in pre_words]
     for plen in range(min(len(redo_pre), len(pren)), MIN_PREFIX_MATCH - 1, -1):
         target = redo_pre[:plen]
         for i in range(len(pren) - plen, -1, -1):
@@ -234,8 +234,8 @@ def retake_drops(words_doc: dict, silence_doc: dict) -> list[dict]:
         for _ in range(12):
             before = [w for w in words if float(w["end"]) <= start + 1e-6]
             after = [w for w in words if float(w["start"]) >= end - 1e-6]
-            if (before and after and _norm(before[-1]["word"])
-                    and _norm(before[-1]["word"]) == _norm(after[0]["word"])):
+            if (before and after and norm_token(before[-1]["word"])
+                    and norm_token(before[-1]["word"]) == norm_token(after[0]["word"])):
                 new_start = round(float(before[-1]["start"]), 3)
                 if new_start < start - 1e-6:
                     start = new_start

@@ -271,11 +271,106 @@ def _assert_plausible(ep: Episode, segments: list[dict], drops: int,
     raise RuntimeError(msg + "Set AUTOCUT_ALLOW_SPARSE_EDL=1 to emit it anyway.")
 
 
+def _clip_cuts_from_playback(cuts: list[_Cut], spans: list[tuple[float, float]]) -> list[_Cut]:
+    """Drop or truncate any cut that overlaps a playback span (reaction spec
+    section 6): no drops inside playback regions — not silence, not filler,
+    not retakes — since the source was edited by its creator and cutting
+    inside it desynchronises everything after that point. A cut straddling a
+    boundary is truncated to its commentary-side remainder(s); a cut wholly
+    inside a playback span is dropped entirely."""
+    if not spans:
+        return cuts
+    spans = sorted(spans)
+    out: list[_Cut] = []
+    for c in cuts:
+        intervals = [(c.start, c.end)]
+        for p_in, p_out in spans:
+            next_intervals = []
+            for s, e in intervals:
+                if e <= p_in or s >= p_out:
+                    next_intervals.append((s, e))
+                    continue
+                if s < p_in:
+                    next_intervals.append((s, p_in))
+                if e > p_out:
+                    next_intervals.append((p_out, e))
+            intervals = next_intervals
+        out.extend(_Cut(s, e, c.reason, c.confidence, c.note, c.pad)
+                  for s, e in intervals if e - s > 1e-6)
+    return out
+
+
+CUE_EDGE_PAD = 0.30                  # fallback safety margin when no confirmed silence is found nearby
+CUE_EDGE_FALLBACK_CONFIDENCE = 0.5   # under review.py's 0.8 audio-scrub threshold — surfaces the row
+
+
+def _cue_drops(ep: Episode, silences: list[dict], segments: list[dict]) -> list[_Cut]:
+    """Cut the spoken cue phrases themselves, plus the dead air between a cue
+    and the real state change (reaction spec section 2, 6). Re-detects the cue
+    sequence rather than reading it from playback.json — only the (silence-
+    snapped) host_in/host_out survive there, not the phrase's own raw span.
+
+    The edge tied to the real state change (a start cue's end = host_in; a
+    stop cue's start = host_out) is already correctly snapped by align.py —
+    reused as-is. The OTHER edge of each drop — the cue phrase's own raw
+    boundary, on the commentary side — is never left on a raw Whisper word
+    timestamp: those run early in this project and leave the word's tail
+    (e.g. "-tary", "-ary") audible past the cut. It's snapped into confirmed
+    acoustic silence instead — backward (earlier) for a start cue's own
+    start, forward (later) for a stop cue's own end. Where no confirmed
+    silence is found nearby, falls back to the raw boundary plus
+    ``CUE_EDGE_PAD`` and drops the row's confidence below review.py's
+    audio-scrub threshold, so the fallback gets a human ear rather than
+    silently risking the same fragment.
+
+    Cues alternate start, stop, start, stop, ... (validated), and playback
+    segments are built by consuming them in that same order, so the i-th
+    'start' cue and the i-th 'stop' cue are exactly the pair that produced
+    segment i (a trailing segment with no closing cue — spec: "may end in
+    either state" — simply has no stop-cue drop to add).
+    """
+    from . import align as align_mod  # lazy: keeps autoauthor importable without yaml
+    cues = align_mod.cues_for_episode(ep)
+    starts = [c for c in cues if c["kind"] == "start"]
+    stops = [c for c in cues if c["kind"] == "stop"]
+    cuts: list[_Cut] = []
+    for i, seg in enumerate(segments):
+        if i < len(starts):
+            raw_start = starts[i]["start"]
+            snapped_start, found = align_mod.snap_backward_to_silence(raw_start, silences)
+            if found:
+                drop_start, confidence = snapped_start, 1.0
+                note = "playback-start cue + dead air"
+            else:
+                drop_start = max(0.0, raw_start - CUE_EDGE_PAD)
+                confidence = CUE_EDGE_FALLBACK_CONFIDENCE
+                note = "playback-start cue + dead air (no confirmed silence before it; padded fallback)"
+            if seg["host_in"] > drop_start + 1e-6:
+                cuts.append(_Cut(drop_start, seg["host_in"], "cue", confidence, note, pad="none"))
+        if i < len(stops):
+            raw_end = stops[i]["end"]
+            snapped_end, found = align_mod.snap_forward_to_silence(raw_end, silences)
+            if found:
+                drop_end, confidence = snapped_end, 1.0
+                note = "playback-stop cue"
+            else:
+                drop_end = raw_end + CUE_EDGE_PAD
+                confidence = CUE_EDGE_FALLBACK_CONFIDENCE
+                note = "playback-stop cue (no confirmed silence after it; padded fallback)"
+            if drop_end > seg["host_out"] + 1e-6:
+                cuts.append(_Cut(seg["host_out"], drop_end, "cue", confidence, note, pad="none"))
+    return cuts
+
+
 def autoauthor(ep: Episode) -> dict[str, Any]:
     """Produce a deterministic baseline EDL and write it to ``edl.json``.
 
     Existing human overrides (``override: true``) are preserved — re-running
     stage 3 must never clobber a review veto (spec section 6).
+
+    Reaction episodes (a ``playback.json`` from the align stage) add the
+    reaction spec's section-6 constraints: no drops inside playback regions,
+    and the cue phrases themselves (+ their dead air) are cut instead.
     """
     words_doc, silence_doc, probe = load_inputs(ep)
     words = words_doc.get("words", [])
@@ -302,9 +397,27 @@ def autoauthor(ep: Episode) -> dict[str, Any]:
         review = sum(1 for d in retake_drops if d.get("needs_review"))
         log.info("autoauthor: retakes cut=%d (%d flagged for review) %s",
                  len(retake_drops), review, retakes.summary(retake_drops, duration))
+
+    playback_segments = None
+    plausibility_duration = duration
+    if ep.playback_json.exists():
+        playback_segments = json.loads(ep.playback_json.read_text(encoding="utf-8")).get("segments", [])
+        spans = [(s["host_in"], s["host_out"]) for s in playback_segments]
+        cuts = _clip_cuts_from_playback(cuts, spans)
+        cuts += _cue_drops(ep, silences, playback_segments)
+        total_playback = sum(p_out - p_in for p_in, p_out in spans)
+        plausibility_duration = max(0.0, duration - total_playback)
+
     drops = _merge_and_snap(cuts, duration, fps)
     segments = _build_segments(drops, duration, fps)
-    _assert_plausible(ep, segments, len(drops), duration, silences)
+    _assert_plausible(ep, segments, len(drops), plausibility_duration, silences)
+
+    if playback_segments is not None:
+        total_playback = duration - plausibility_duration
+        cut_seconds = sum(d["out"] - d["in"] for d in segments if d["action"] == "drop")
+        log.info("autoauthor: reaction split — %.1fs playback (%d segment(s)), "
+                 "%.1fs commentary, %.1fs cut from commentary",
+                 total_playback, len(playback_segments), plausibility_duration, cut_seconds)
 
     new_edl: dict[str, Any] = {
         "version": edl.SCHEMA_VERSION,
