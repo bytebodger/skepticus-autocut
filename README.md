@@ -34,6 +34,16 @@ The pipeline shells out to `ffmpeg`/`ffprobe` and uses `faster-whisper` on CUDA.
 ## Usage
 
 ```
+# The whole inbox-to-composite chain in one command. Auto-detects monologue
+# vs reaction format (see below) and runs every stage in order, failing fast
+# and loudly on the first error, with a progress line per stage and a summary
+# (timings, cut breakdown, flagged-drop count, output path/size) at the end.
+python -m autocut go ep042
+python -m autocut go ep042 --review   # pause at the review gate and wait for you
+python -m autocut go ep042 --preview  # compose at 1080p over a short window first
+
+# Or drive the stages by hand:
+
 # Pre-review pipeline: probe -> transcribe -> baseline EDL -> validate
 python -m autocut all ep042
 
@@ -91,6 +101,12 @@ Two files in `inbox/`, alongside the usual `<ep>.mp4` host recording:
 
 The host declares playback boundaries out loud — "end my commentary" starts
 playback, "begin my commentary" ends it (both configurable; see below):
+
+`python -m autocut go ep042` runs the whole sequence below automatically
+(`go` detects the reaction format from `<ep>_source.<ext>`'s presence) and
+additionally runs `cue-check`/`sync-check` against the render and reports
+their results, the playback/commentary split, and cue alternation in its
+summary. The stages by hand:
 
 ```
 # Same host-recording prep as the monologue format

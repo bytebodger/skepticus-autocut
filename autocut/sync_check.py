@@ -29,6 +29,7 @@ import logging
 import re
 from pathlib import Path
 
+from . import edl
 from .paths import Episode
 
 log = logging.getLogger("autocut.sync_check")
@@ -59,11 +60,34 @@ def _aligned_offsets(host_words: list[dict], source_words: list[dict],
     return offsets
 
 
-def run(ep: Episode) -> dict:
+def _segments_in_window(segments: list[dict], ep: Episode, window: tuple[float, float]) -> list[dict]:
+    """Segments whose output-time position (via the EDL's source->output map)
+    falls inside ``window`` — the same output-time window a ``compose
+    --preview``/``--range`` render covers. Lets a quick preview run sync-check
+    only against what was actually rendered, instead of re-transcribing every
+    segment's source audio for the whole episode."""
+    edl_doc = edl.load(ep.edl_json)
+    spans = edl.build_time_map(edl_doc["segments"])
+    w0, dur = window
+    in_window = []
+    for seg in segments:
+        out_t = edl.source_to_output(seg["host_in"], spans)
+        if out_t is not None and w0 - 1e-6 <= out_t < w0 + dur + 1e-6:
+            in_window.append(seg)
+    return in_window
+
+
+def run(ep: Episode, *, window: tuple[float, float] | None = None) -> dict:
     """Check every playback segment's cumulative source position against
     ground truth (source's own transcript). Returns
     ``{"segments": [{"id", "n_matched", "median_offset", "spread"}, ...]}``;
     also written to ``sync_check_report_json``.
+
+    ``window`` (output-time ``(start, length)``) restricts the check to
+    segments landing inside it — for checking only what a ``compose
+    --preview``/``--range`` render actually produced, without re-transcribing
+    the whole episode's source audio. ``None`` (default, and the CLI's
+    behaviour) checks every segment.
     """
     from . import transcribe as transcribe_mod  # lazy: keeps this importable without faster_whisper
     from . import ffmpeg
@@ -78,9 +102,15 @@ def run(ep: Episode) -> dict:
     host_words_all = words_doc.get("words", [])
     source_path = Path(playback["source_file"])
 
+    segments_all = playback.get("segments", [])
+    segments = _segments_in_window(segments_all, ep, window) if window is not None else segments_all
+    if window is not None:
+        log.info("sync-check: window %.1f-%.1fs -> %d/%d segment(s) in range",
+                 window[0], window[0] + window[1], len(segments), len(segments_all))
+
     ep.sync_check_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    for seg in playback.get("segments", []):
+    for seg in segments:
         host_in, host_out = seg["host_in"], seg["host_out"]
         source_in, source_out = seg["source_in"], seg["source_out"]
         host_words = [w for w in host_words_all if host_in <= float(w["start"]) < host_out]

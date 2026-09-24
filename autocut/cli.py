@@ -40,7 +40,8 @@ _RUNTIME_DEPS = {"faster_whisper", "ctranslate2", "fastapi", "uvicorn", "jinja2"
 _STAGE_DEPS = {"transcribe": ("faster_whisper", "ctranslate2"),
                "all": ("faster_whisper", "ctranslate2"),
                "cue-check": ("faster_whisper", "ctranslate2"),
-               "sync-check": ("faster_whisper", "ctranslate2")}
+               "sync-check": ("faster_whisper", "ctranslate2"),
+               "go": ("faster_whisper", "ctranslate2")}
 
 
 def _dependency_error(missing: list[str]) -> str:
@@ -206,6 +207,13 @@ def _cmd_review(ep, args):
     review.serve(ep.episode_id, host=args.host, port=args.port, root=ep.root)
 
 
+def _cmd_go(ep, args) -> int:
+    """Full inbox-to-composite chain: auto-detects reaction vs monologue
+    format and runs every stage in order, failing fast on the first error."""
+    from . import pipeline as pipeline_mod  # lazy: keeps cli importable without numpy/pyyaml
+    return pipeline_mod.run_go(ep, force=args.force, review=args.review, preview=args.preview)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="autocut", description="Skepticus Autocut pipeline.")
     p.add_argument("--dry-run", action="store_true", help="log ffmpeg commands without running them")
@@ -281,6 +289,14 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--host", default="127.0.0.1")
     rp.add_argument("--port", type=int, default=8765)
     rp.set_defaults(func=_cmd_review)
+
+    gp = sub.add_parser("go", help=_cmd_go.__doc__ or "go")
+    gp.add_argument("episode")
+    gp.add_argument("--review", action="store_true",
+                    help="pause at the review gate and wait for you before rendering")
+    gp.add_argument("--preview", action="store_true",
+                    help="compose at 1080p over a short window instead of the full render")
+    gp.set_defaults(func=_cmd_go)
 
     return p
 
